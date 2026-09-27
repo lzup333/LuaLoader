@@ -146,7 +146,28 @@ mod.patch.set_field_value(field, instance, value[, type])
 **On Android you should always pass it**, because Android reads/writes the field's real pointer and
 an unknown type can read the wrong thing.
 
-Methods: `mod.patch.invoke(method, [instance, ] ...)`.
+Struct fields (e.g. `Vector2`) and arrays:
+
+```lua
+-- Vector2, or any 8-byte struct that starts with two floats
+local x, y = mod.patch.get_field_vec2(field, instance)
+mod.patch.set_field_vec2(field, instance, x, y)
+
+-- Raw bytes, length = field size (pair with string.pack/unpack for arbitrary structs)
+local raw = mod.patch.get_field_raw(field, instance)   -- nil on failure
+mod.patch.set_field_raw(field, instance, raw)
+
+-- Arrays (e.g. the object arrays Main.npc / Main.projectile)
+local n = mod.patch.array_length(array)
+local obj = mod.patch.array_at(array, i)               -- omitted type = object (pointer)
+local num = mod.patch.array_at(array, i, "float")      -- value arrays need a type name
+```
+
+You can get an object array handle from a static field, e.g.
+`mod.patch.get_field_value(mod.patch.get_field(main, "projectile"), nil, "object")`.
+
+Methods: `mod.patch.invoke(method, [instance, ] ...)`. A reference return value comes back as
+userdata; no result comes back as `nil`.
 
 Hooks:
 

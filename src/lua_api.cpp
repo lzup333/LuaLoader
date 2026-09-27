@@ -37,6 +37,7 @@ extern "C" {
 #include "tefkernel/patchlib/field.h"
 #include "tefkernel/patchlib/method.h"
 #include "tefkernel/patchlib/property.h"
+#include "tefkernel/patchlib/struct/array.h"
 #include "tefkernel/patchlib/type.h"
 #include "tefkernel/tefstd/vector.h"
 
@@ -91,9 +92,12 @@ namespace lualoader::lua_api {
             case PATCH_DOUBLE:   lua_pushnumber(L, *static_cast<const double *>(value)); break;
             case PATCH_CHAR:     lua_pushinteger(L, *static_cast<const char *>(value)); break;
             case PATCH_POINTER:
-            case PATCH_OBJECT:
-                lua_pushlightuserdata(L, *static_cast<void *const *>(value));
+            case PATCH_OBJECT: {
+                void *ptr = *static_cast<void *const *>(value);
+                if (ptr) lua_pushlightuserdata(L, ptr);
+                else lua_pushnil(L);
                 break;
+            }
             case PATCH_VOID:
             default:
                 lua_pushnil(L);
@@ -507,6 +511,146 @@ namespace lualoader::lua_api {
     }
 
     // ========================================================================
+    // Patchlib: 结构体字段(Vector2 等) / 数组
+    // ========================================================================
+
+    /// 读取字段的原始字节。Android/IL2CPP 走字段真实指针，桌面端走 get_value。
+    static bool read_field_bytes(const patch_handle_t field, const patch_handle_t instance, void *out,
+                                 const size_t size) {
+        if (!field || !out || size == 0 || size > 16) return false;
+#if defined(__ANDROID__)
+        void *ptr = patchlib_field_get_pointer(field, instance);
+        if (!ptr) return false;
+        std::memcpy(out, ptr, size);
+        return true;
+#else
+        std::memset(out, 0, size);
+        patchlib_field_get_value(field, instance, out);
+        return true;
+#endif
+    }
+
+    /// 写入字段的原始字节。Android/IL2CPP 走字段真实指针，桌面端走 set_value。
+    static bool write_field_bytes(const patch_handle_t field, const patch_handle_t instance, const void *in,
+                                  const size_t size) {
+        if (!field || !in || size == 0 || size > 16) return false;
+#if defined(__ANDROID__)
+        void *ptr = patchlib_field_get_pointer(field, instance);
+        if (!ptr) return false;
+        std::memcpy(ptr, in, size);
+        return true;
+#else
+        patchlib_field_set_value(field, instance, const_cast<void *>(in));
+        return true;
+#endif
+    }
+
+    /// 读取 Vector2(或任意以两个 float 开头的 8 字节结构体)字段 → x, y
+    static int l_patch_field_get_vec2(lua_State *L) {
+        const patch_handle_t field = to_handle(L, 1);
+        const patch_handle_t instance = to_handle(L, 2);
+        if (!field) return luaL_error(L, "invalid field handle");
+        if (patchlib_field_get_size(field) < 8) {
+            lua_pushnil(L);
+            lua_pushnil(L);
+            return 2;
+        }
+        float v[2] = {0.0f, 0.0f};
+        if (!read_field_bytes(field, instance, v, sizeof(v))) {
+            lua_pushnil(L);
+            lua_pushnil(L);
+            return 2;
+        }
+        lua_pushnumber(L, v[0]);
+        lua_pushnumber(L, v[1]);
+        return 2;
+    }
+
+    /// 写入 Vector2(或任意以两个 float 开头的 8 字节结构体)字段 ← x, y
+    static int l_patch_field_set_vec2(lua_State *L) {
+        const patch_handle_t field = to_handle(L, 1);
+        const patch_handle_t instance = to_handle(L, 2);
+        if (!field) return luaL_error(L, "invalid field handle");
+        const float v[2] = {
+                static_cast<float>(luaL_checknumber(L, 3)),
+                static_cast<float>(luaL_checknumber(L, 4)),
+        };
+        if (!write_field_bytes(field, instance, v, sizeof(v))) {
+            return luaL_error(L, "cannot write vector field");
+        }
+        return 0;
+    }
+
+    /// 读取字段原始字节，返回 Lua 字符串（长度 = 字段大小，最多 16 字节）
+    static int l_patch_field_get_raw(lua_State *L) {
+        const patch_handle_t field = to_handle(L, 1);
+        const patch_handle_t instance = to_handle(L, 2);
+        if (!field) return luaL_error(L, "invalid field handle");
+        const size_t size = patchlib_field_get_size(field);
+        if (size == 0 || size > 16) {
+            lua_pushnil(L);
+            return 1;
+        }
+        unsigned char buffer[16] = {};
+        if (!read_field_bytes(field, instance, buffer, size)) {
+            lua_pushnil(L);
+            return 1;
+        }
+        lua_pushlstring(L, reinterpret_cast<const char *>(buffer), size);
+        return 1;
+    }
+
+    /// 以 Lua 字符串写入字段原始字节（长度必须等于字段大小）
+    static int l_patch_field_set_raw(lua_State *L) {
+        const patch_handle_t field = to_handle(L, 1);
+        const patch_handle_t instance = to_handle(L, 2);
+        if (!field) return luaL_error(L, "invalid field handle");
+        size_t len = 0;
+        const char *data = luaL_checklstring(L, 3, &len);
+        const size_t size = patchlib_field_get_size(field);
+        if (size == 0 || size > 16 || len != size) {
+            return luaL_error(L, "raw size mismatch (field=%zu, data=%zu)", size, len);
+        }
+        if (!write_field_bytes(field, instance, data, size)) {
+            return luaL_error(L, "cannot write raw field");
+        }
+        return 0;
+    }
+
+    /// 数组长度
+    static int l_patch_array_length(lua_State *L) {
+        const patch_handle_t array = to_handle(L, 1);
+        if (!array) return luaL_error(L, "invalid array handle");
+        lua_pushinteger(L, static_cast<lua_Integer>(patchlib_array_length(array)));
+        return 1;
+    }
+
+    /// 数组取元素。第三个参数为元素类型名，省略时按对象(指针)处理。
+    static int l_patch_array_at(lua_State *L) {
+        const patch_handle_t array = to_handle(L, 1);
+        if (!array) return luaL_error(L, "invalid array handle");
+        const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
+        uint64_t buffer = 0;
+        if (!patchlib_array_at(array, index, &buffer)) {
+            lua_pushnil(L);
+            return 1;
+        }
+        if (lua_isnoneornil(L, 3)) {
+            void *ptr = *reinterpret_cast<void **>(&buffer);
+            if (ptr) lua_pushlightuserdata(L, ptr);
+            else lua_pushnil(L);
+            return 1;
+        }
+        const char *type_name = luaL_checkstring(L, 3);
+        patch_type_t type;
+        if (!type_from_name(type_name, &type)) {
+            return luaL_error(L, "unknown type name: %s", type_name);
+        }
+        push_patch_value(L, type, &buffer);
+        return 1;
+    }
+
+    // ========================================================================
     // Patchlib: 钩子（Prefix / Postfix）
     // ========================================================================
 
@@ -730,6 +874,12 @@ namespace lualoader::lua_api {
             {"get_method", l_patch_get_method},
             {"get_field_value", l_patch_field_get_value},
             {"set_field_value", l_patch_field_set_value},
+            {"get_field_vec2", l_patch_field_get_vec2},
+            {"set_field_vec2", l_patch_field_set_vec2},
+            {"get_field_raw", l_patch_field_get_raw},
+            {"set_field_raw", l_patch_field_set_raw},
+            {"array_length", l_patch_array_length},
+            {"array_at", l_patch_array_at},
             {"invoke", l_patch_invoke},
             {"install_hook", l_patch_install_hook},
             {"free", l_patch_free},

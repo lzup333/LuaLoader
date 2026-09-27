@@ -155,11 +155,33 @@ mod.patch.set_field_value(field, instance, value[, type])
 `type` 可以省略（由内核查），但建议显式写，例如 `"int32"`。**Android 上请一定写**，因为
 Android 走的是字段真实指针，类型不明确容易读错。
 
+结构体字段（如 `Vector2`）与数组：
+
+```lua
+-- Vector2 等以两个 float 开头的 8 字节结构体
+local x, y = mod.patch.get_field_vec2(field, instance)
+mod.patch.set_field_vec2(field, instance, x, y)
+
+-- 原始字节读写，长度 = 字段大小（配合 string.pack/unpack 可处理任意结构体）
+local raw = mod.patch.get_field_raw(field, instance)   -- 失败返回 nil
+mod.patch.set_field_raw(field, instance, raw)
+
+-- 数组（如 Main.npc / Main.projectile 这类对象数组）
+local n = mod.patch.array_length(array)
+local obj = mod.patch.array_at(array, i)               -- 省略类型时按对象(指针)处理
+local num = mod.patch.array_at(array, i, "float")      -- 值类型数组需给类型名
+```
+
+对象数组的句柄可通过静态字段取得，例如
+`mod.patch.get_field_value(mod.patch.get_field(main, "projectile"), nil, "object")`。
+
 调用方法：
 
 ```lua
 mod.patch.invoke(method, [instance, ] ...)
 ```
+
+方法返回对象(引用类型)时得到 userdata，没有结果时得到 `nil`。
 
 装钩子：
 
