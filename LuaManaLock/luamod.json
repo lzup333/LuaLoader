@@ -1,0 +1,8 @@
+{
+  "main": "main.lua",
+  "pkg_id": "lzup.lua.manalock",
+  "version": "1.0.0",
+  "version_code": 1,
+  "api_version": 1,
+  "multiplayer_safe": true
+}

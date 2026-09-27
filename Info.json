@@ -1,0 +1,29 @@
+{
+  "pkgId": "lzup333.lualoader",
+  "name": "LuaLoader",
+  "author": "lzup333",
+  "description": "基于 TEFKernel 的 Lua Mod 加载器, 内置 Lua 5.4, 使用 Lua 脚本编写 Mod",
+  "version": "1.0.0",
+  "versionCode": 1,
+  "detailedInformationURL": "https://github.com/lzup333/TEFKernel-LuaLoader",
+  "updateURL": "",
+  "dependence": [],
+  "support": {
+    "android": {
+      "arm64": true,
+      "arm": true
+    },
+    "windows": {
+      "x64": false,
+      "x86": false
+    },
+    "linux": {
+      "x64": true,
+      "x86": false
+    },
+    "mac": {
+      "x64": false,
+      "arm64": false
+    }
+  }
+}
