@@ -514,6 +514,10 @@ namespace lualoader::lua_api {
     // Patchlib: 结构体字段(Vector2 等) / 数组
     // ========================================================================
 
+    // 注意: 不要调用 patchlib_field_get_size —— 内核的符号注入表里没有它，
+    // 在模块中会是 NULL 函数指针, 调用即崩溃。尺寸用 patchlib_field_get_type +
+    // get_size_from_patch_type 推断, 或由调用方显式给出。
+
     /// 读取字段的原始字节。Android/IL2CPP 走字段真实指针，桌面端走 get_value。
     static bool read_field_bytes(const patch_handle_t field, const patch_handle_t instance, void *out,
                                  const size_t size) {
@@ -545,16 +549,18 @@ namespace lualoader::lua_api {
 #endif
     }
 
+    /// 推断字段大小(1~16)，失败返回 0。不使用未注入的 patchlib_field_get_size。
+    static size_t guess_field_size(const patch_handle_t field) {
+        if (!field) return 0;
+        const size_t size = get_size_from_patch_type(patchlib_field_get_type(field));
+        return size;
+    }
+
     /// 读取 Vector2(或任意以两个 float 开头的 8 字节结构体)字段 → x, y
     static int l_patch_field_get_vec2(lua_State *L) {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
-        if (patchlib_field_get_size(field) < 8) {
-            lua_pushnil(L);
-            lua_pushnil(L);
-            return 2;
-        }
         float v[2] = {0.0f, 0.0f};
         if (!read_field_bytes(field, instance, v, sizeof(v))) {
             lua_pushnil(L);
@@ -581,12 +587,21 @@ namespace lualoader::lua_api {
         return 0;
     }
 
-    /// 读取字段原始字节，返回 Lua 字符串（长度 = 字段大小，最多 16 字节）
+    /// 读取字段原始字节，返回 Lua 字符串。
+    /// 第三个参数为可选字节数；省略时按字段类型推断(失败则取 8)。
     static int l_patch_field_get_raw(lua_State *L) {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
-        const size_t size = patchlib_field_get_size(field);
+
+        size_t size;
+        if (lua_isnoneornil(L, 3)) {
+            size = guess_field_size(field);
+            if (size == 0) size = 8; // 结构体等未知类型默认 8 字节
+        } else {
+            const lua_Integer requested = luaL_checkinteger(L, 3);
+            size = requested > 0 ? static_cast<size_t>(requested) : 0;
+        }
         if (size == 0 || size > 16) {
             lua_pushnil(L);
             return 1;
@@ -600,18 +615,17 @@ namespace lualoader::lua_api {
         return 1;
     }
 
-    /// 以 Lua 字符串写入字段原始字节（长度必须等于字段大小）
+    /// 以 Lua 字符串写入字段原始字节（长度 1~16）
     static int l_patch_field_set_raw(lua_State *L) {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
         size_t len = 0;
         const char *data = luaL_checklstring(L, 3, &len);
-        const size_t size = patchlib_field_get_size(field);
-        if (size == 0 || size > 16 || len != size) {
-            return luaL_error(L, "raw size mismatch (field=%zu, data=%zu)", size, len);
+        if (len == 0 || len > 16) {
+            return luaL_error(L, "raw data length out of range (1..16)");
         }
-        if (!write_field_bytes(field, instance, data, size)) {
+        if (!write_field_bytes(field, instance, data, len)) {
             return luaL_error(L, "cannot write raw field");
         }
         return 0;
