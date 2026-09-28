@@ -1,6 +1,8 @@
 /*******************************************************************************
  * LuaLoader - core
  * Copyright (C) 2026 lzup333
+ * Based on KernelLoader (https://github.com/eternalfuture-e38299/TEFKernel-KernelLoader)
+ *   Copyright (C) 2026 eternalfuture-e38299
  * Author: lzup333
  *
  * This program is free software: you can redistribute it and/or modify

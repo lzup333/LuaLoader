@@ -46,35 +46,31 @@ namespace lualoader::lua_engine {
         return 1;
     }
 
-    /// 只在白名单内打开标准库，避免暴露 io/os/debug 等能力
-    static void open_safe_libs(lua_State *L) {
-        static const luaL_Reg libs[] = {
-                {LUA_GNAME, luaopen_base},
-                {LUA_TABLIBNAME, luaopen_table},
-                {LUA_STRLIBNAME, luaopen_string},
-                {LUA_MATHLIBNAME, luaopen_math},
-                {LUA_UTF8LIBNAME, luaopen_utf8},
-                {LUA_COLIBNAME, luaopen_coroutine},
-                {LUA_LOADLIBNAME, luaopen_package},
-                {nullptr, nullptr},
-        };
-        for (const luaL_Reg *lib = libs; lib->func; ++lib) {
-            luaL_requiref(L, lib->name, lib->func, 1);
-            lua_pop(L, 1);
-        }
+    /// 打开全部 Lua 标准库（base/table/string/math/utf8/coroutine/io/os/debug/package）。
+    /// 说明：LuaLoader 不再限制 Lua 能力；Mod 是否可信由玩家自行审查 Mod 包决定。
+    static void open_all_libs(lua_State *L) {
+        luaL_openlibs(L);
     }
 
-    /// 配置 package.path，使 require 可以加载 Mod 目录内的纯 Lua 模块，并禁用 C 模块加载
+    /// 配置 package：把 Mod 目录加入 package.path（保留系统默认路径），
+    /// 同时禁用 C 原生模块加载（清空 cpath 并移除 loadlib），避免混入 .so 原生代码。
     static void configure_package(lua_State *L, const std::string &mod_dir) {
         lua_getglobal(L, "package");
         if (!lua_istable(L, -1)) {
             lua_pop(L, 1);
             return;
         }
-        const std::string pattern = mod_dir + "/?.lua;" + mod_dir + "/?/init.lua";
+
+        // 在默认搜索路径前追加 Mod 目录，保证 require 能加载 Mod 自带的 Lua 模块
+        lua_getfield(L, -1, "path");
+        const char *default_path = lua_tostring(L, -1);
+        const std::string mod_pattern = mod_dir + "/?.lua;" + mod_dir + "/?/init.lua;";
+        const std::string pattern = mod_pattern + (default_path ? default_path : "");
+        lua_pop(L, 1);
         lua_pushstring(L, pattern.c_str());
         lua_setfield(L, -2, "path");
 
+        // 禁用原生 C 模块加载
         lua_pushliteral(L, "");
         lua_setfield(L, -2, "cpath");
         lua_pushnil(L);
@@ -276,7 +272,7 @@ namespace lualoader::lua_engine {
         }
         handle->L = L;
 
-        open_safe_libs(L);
+        open_all_libs(L);
         configure_package(L, handle->mod_dir);
         lua_api::register_api(L, handle);
 

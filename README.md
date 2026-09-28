@@ -155,6 +155,55 @@ mod.patch.set_field_value(field, instance, value[, type])
 `type` 可以省略（由内核查），但建议显式写，例如 `"int32"`。**Android 上请一定写**，因为
 Android 走的是字段真实指针，类型不明确容易读错。
 
+托管字符串（`System.String`）可以直接当 Lua 字符串读写，把类型写成 `"string"` 即可：
+
+```lua
+local name = mod.patch.get_field_value(field, instance, "string")  -- 返回 Lua 字符串
+mod.patch.set_field_value(field, instance, "你好", "string")
+local s = mod.patch.array_at(array, i, "string")                   -- 数组元素也可以
+```
+
+需要手动构造/读取时：
+
+```lua
+local h = mod.patch.string_create("hello")  -- 托管字符串句柄（由 Lua GC 管理）
+mod.patch.string_value(h)                   -- "hello"（也可直接传普通 Lua 字符串）
+mod.patch.string_empty(h)                   -- false
+mod.patch.string_length(h)                  -- 5
+```
+
+创建对象实例：
+
+```lua
+-- 无参：与旧版一致
+local obj = mod.patch.new_instance(type)
+-- 带参：自动按 ".ctor" 参数个数匹配构造函数
+local obj2 = mod.patch.new_instance(type, 1, "x")
+-- 也可以显式拿构造函数再构造
+local ctor = mod.patch.get_method(type, ".ctor", 2)
+local obj3 = mod.patch.construct(ctor, 1, "x")
+```
+
+句柄的生命周期：
+
+- 普通 API 返回的对象句柄是**借用**的，只在当前调用内有效（hook 里的 `instance`/对象参数
+  在回调结束后会被内核释放）。**不要**把 hook 里的 `instance` 直接存起来跨帧使用。
+- 需要跨帧缓存时，用 `mod.patch.retain(handle)` 拿到**由 Lua GC 托管**的句柄副本，
+  不必手动 `free`：
+
+  ```lua
+  local npc = mod.patch.retain(instance)   -- 可以安全地存进表里
+  ```
+
+- 或者给 hook 加一个 `copy = true`，让 `instance`、对象参数、返回值自动变成托管副本：
+
+  ```lua
+  mod.patch.install_hook(method, { postfix = on_ai, copy = true })
+  ```
+
+  托管副本只是同一对象的另一个句柄，读写字段仍然作用于原对象；Lua GC 会在不再引用时
+  自动释放。默认不开 `copy`，行为与旧版完全一致。
+
 结构体字段（如 `Vector2`）与数组：
 
 ```lua
@@ -215,6 +264,19 @@ hook:remove()   -- 手动卸载
 2. `<private_dir>/<main>`
 3. `<配置文件目录>/<main>`
 4. `<配置文件目录>/Resources/lib/<main>`
+
+## Lua 能力与安全提示
+
+- LuaLoader **打开 Lua 5.4 的全部标准库**：`base`、`table`、`string`、`math`、`utf8`、
+  `coroutine`、`io`、`os`、`debug`、`package`，Mod 可以使用完整 Lua 代码
+  （`io.open` / `os.*` / `debug.*` / `dofile` / `loadfile` / `load` 等均可）。
+- `package.path` 会包含 Mod 目录，`require` 可加载 Mod 自带的 Lua 模块。
+- **仍禁用原生 C 模块**：`package.cpath` 被清空、`loadlib` 被移除，Mod 不能 `require` 系统里的
+  `.so`，避免混入任意原生代码。也就是说放开的只是 Lua 层能力。
+
+> ⚠️ **安全提示**：这意味着 Mod 脚本可以读写文件、执行系统命令等，请只安装你信任的 Mod。
+> 安装前建议先**手动打开 Mod 压缩包查看其中的 `.lua` 脚本**（也可以把脚本丢给 AI 帮你分析
+> 它做了什么），确认无误再启用。
 
 ## 许可证
 

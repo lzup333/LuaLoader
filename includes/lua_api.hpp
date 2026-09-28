@@ -30,6 +30,11 @@ namespace lualoader::lua_api {
      *  - 日志：mod.log / mod.trace / mod.debug / mod.info / mod.warn / mod.error / mod.fatal
      *  - 数据：mod.read_file / mod.write_file / mod.file_exists（限制在 private_dir 内）
      *  - 钩子：mod.patch.* 映射 tefkernel patchlib 的类型/字段/方法/钩子
+     *  - 托管字符串：mod.patch.string_create / string_value / string_empty / string_length，
+     *    以及字段/数组的 "string" 伪类型
+     *  - 带参构造：mod.patch.new_instance(type, ...) / construct(ctor, ...)
+     *  - 句柄生命周期：mod.patch.retain(handle) 返回由 Lua GC 托管的句柄副本；
+     *    install_hook 支持 { copy = true }
      *
      * @param L Lua 状态机
      * @param handle 当前 Mod 句柄（保存于注册表，供 C 回调取用）

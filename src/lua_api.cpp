@@ -20,6 +20,7 @@
 #include "lua_api.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -38,6 +39,7 @@ extern "C" {
 #include "tefkernel/patchlib/method.h"
 #include "tefkernel/patchlib/property.h"
 #include "tefkernel/patchlib/struct/array.h"
+#include "tefkernel/patchlib/struct/string.h"
 #include "tefkernel/patchlib/type.h"
 #include "tefkernel/tefstd/vector.h"
 
@@ -45,6 +47,7 @@ namespace lualoader::lua_api {
 
     static constexpr const char *HANDLE_KEY = "lualoader.mod.handle";
     static constexpr const char *HOOK_METATABLE = "LuaLoader.Hook";
+    static constexpr const char *OWNED_HANDLE_MT = "LuaLoader.OwnedHandle";
     static constexpr int MAX_HOOK_SLOTS = 32;
     static constexpr int MAX_CALL_ARGS = 16;
 
@@ -59,6 +62,42 @@ namespace lualoader::lua_api {
         return h;
     }
 
+    /// 由 Lua GC 托管的内核对象句柄：__gc 时自动释放（Android 上释放为空操作）
+    struct OwnedHandle {
+        patch_handle_t handle;
+    };
+
+    /// 复制内核对象句柄，使其生命周期独立于 hook 调用。
+    /// 桌面端为新 GCHandle（指向同一对象，读写字段仍作用于原对象）；Android 直接返回原句柄。
+    static patch_handle_t copy_handle(const patch_handle_t h) {
+#if defined(__ANDROID__)
+        return h;
+#else
+        return patchlib_handle_copy(h);
+#endif
+    }
+
+    /// 压入一个由 Lua GC 托管的句柄（nil 安全）
+    static void push_owned_handle(lua_State *L, const patch_handle_t h) {
+        if (!h) {
+            lua_pushnil(L);
+            return;
+        }
+        auto *ud = static_cast<OwnedHandle *>(lua_newuserdatauv(L, sizeof(OwnedHandle), 0));
+        ud->handle = h;
+        luaL_setmetatable(L, OWNED_HANDLE_MT);
+    }
+
+    /// 托管句柄的 __gc：Lua GC 回收时释放内核句柄，避免泄漏
+    static int l_owned_handle_gc(lua_State *L) {
+        auto *ud = static_cast<OwnedHandle *>(luaL_checkudata(L, 1, OWNED_HANDLE_MT));
+        if (ud && ud->handle) {
+            patchlib_free(ud->handle);
+            ud->handle = nullptr;
+        }
+        return 0;
+    }
+
     static void push_handle(lua_State *L, const patch_handle_t h) {
         if (h) {
             lua_pushlightuserdata(L, h);
@@ -67,9 +106,16 @@ namespace lualoader::lua_api {
         }
     }
 
+    /// 从 Lua 栈取句柄：兼容 lightuserdata（借用）与 GC 托管 userdata（自有）
     static patch_handle_t to_handle(lua_State *L, const int idx) {
         if (lua_isnoneornil(L, idx)) return nullptr;
-        return static_cast<patch_handle_t>(lua_touserdata(L, idx));
+        if (lua_type(L, idx) == LUA_TLIGHTUSERDATA) {
+            return static_cast<patch_handle_t>(lua_touserdata(L, idx));
+        }
+        if (auto *ud = static_cast<OwnedHandle *>(luaL_testudata(L, idx, OWNED_HANDLE_MT))) {
+            return ud->handle;
+        }
+        return nullptr;
     }
 
     /// 将 patchlib 的值缓冲区压入 Lua 栈
@@ -146,7 +192,7 @@ namespace lualoader::lua_api {
                 break;
             case PATCH_POINTER:
             case PATCH_OBJECT:
-                *static_cast<void **>(out) = lua_isnoneornil(L, idx) ? nullptr : lua_touserdata(L, idx);
+                *static_cast<void **>(out) = to_handle(L, idx);
                 break;
             case PATCH_VOID:
             default:
@@ -375,11 +421,6 @@ namespace lualoader::lua_api {
         return 1;
     }
 
-    static int l_patch_new_instance(lua_State *L) {
-        push_handle(L, patchlib_type_new_instance(to_handle(L, 1)));
-        return 1;
-    }
-
     static int l_patch_get_parent(lua_State *L) {
         push_handle(L, patchlib_type_get_parent(to_handle(L, 1)));
         return 1;
@@ -418,10 +459,61 @@ namespace lualoader::lua_api {
         return 1;
     }
 
+    // ========================================================================
+    // Patchlib: 托管字符串辅助
+    // ========================================================================
+
+    /// 是否为字符串伪类型名 "string"
+    static bool is_string_type_arg(lua_State *L, const int idx) {
+        return lua_type(L, idx) == LUA_TSTRING && std::strcmp(lua_tostring(L, idx), "string") == 0;
+    }
+
+    /// 读取引用类型字段的对象句柄（Android 走真实指针，桌面走 get_value）
+    static patch_handle_t read_field_object(const patch_handle_t field, const patch_handle_t instance) {
+        patch_handle_t obj = nullptr;
+#if defined(__ANDROID__)
+        void *ptr = patchlib_field_get_pointer(field, instance);
+        if (ptr) obj = *static_cast<patch_handle_t *>(ptr);
+#else
+        patchlib_field_get_value(field, instance, &obj);
+#endif
+        return obj;
+    }
+
+    /// 写入引用类型字段的对象句柄
+    static void write_field_object(const patch_handle_t field, const patch_handle_t instance, const patch_handle_t obj) {
+#if defined(__ANDROID__)
+        void *ptr = patchlib_field_get_pointer(field, instance);
+        if (ptr) *static_cast<patch_handle_t *>(ptr) = obj;
+#else
+        patch_handle_t value = obj;
+        patchlib_field_set_value(field, instance, &value);
+#endif
+    }
+
+    /// 把托管 System.String 对象句柄压入 Lua（失败压 nil）
+    static void push_managed_string(lua_State *L, const patch_handle_t str) {
+        if (!str) {
+            lua_pushnil(L);
+            return;
+        }
+        char *c = patchlib_string_cstr(str);
+        if (!c) {
+            lua_pushnil(L);
+            return;
+        }
+        lua_pushstring(L, c);
+        free(c);
+    }
+
     static int l_patch_field_get_value(lua_State *L) {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
+        if (is_string_type_arg(L, 3)) {
+            push_managed_string(L, read_field_object(field, instance));
+            return 1;
+        }
         const patch_type_t type = resolve_field_type(L, 3, field);
 #if defined(__ANDROID__)
         // Android/IL2CPP 下 get_value 不可靠，直接用字段真实指针
@@ -443,6 +535,14 @@ namespace lualoader::lua_api {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
+        if (is_string_type_arg(L, 4)) {
+            const char *s = luaL_checkstring(L, 3);
+            const patch_handle_t str = patchlib_string_create(s);
+            if (!str) return luaL_error(L, "cannot create managed string");
+            write_field_object(field, instance, str);
+            patchlib_free(str);
+            return 0;
+        }
         const patch_type_t type = resolve_field_type(L, 4, field);
 #if defined(__ANDROID__)
         // Android/IL2CPP 下 set_value 不可靠，直接写入字段真实指针
@@ -506,8 +606,115 @@ namespace lualoader::lua_api {
     }
 
     static int l_patch_free(lua_State *L) {
+        if (auto *ud = static_cast<OwnedHandle *>(luaL_testudata(L, 1, OWNED_HANDLE_MT))) {
+            if (ud->handle) {
+                patchlib_free(ud->handle);
+                ud->handle = nullptr;
+            }
+            return 0;
+        }
         patchlib_free(to_handle(L, 1));
         return 0;
+    }
+
+    // ========================================================================
+    // Patchlib: 带参构造
+    // ========================================================================
+
+    /// 解析构造函数并创建实例（参数从 first_arg 开始按签名编组）
+    static int construct_instance(lua_State *L, const patch_handle_t ctor, const int first_arg) {
+        if (!ctor) return luaL_error(L, "constructor not found");
+
+        patch_method_signature_t sig;
+        if (!patchlib_method_get_signature(ctor, &sig)) {
+            return luaL_error(L, "cannot get constructor signature");
+        }
+        uint64_t storage[MAX_CALL_ARGS][1] = {};
+        void *argv[MAX_CALL_ARGS] = {};
+        build_arg_array(L, first_arg, &sig, storage, argv, MAX_CALL_ARGS);
+        patchlib_method_signature_free(&sig);
+
+        patch_handle_t instance = nullptr;
+        if (!patchlib_constructor_invoke(ctor, &instance, argv)) {
+            lua_pushnil(L);
+            return 1;
+        }
+        // 新实例句柄由 Lua GC 管理，避免 GCHandle 泄漏
+        push_owned_handle(L, instance);
+        return 1;
+    }
+
+    /// mod.patch.new_instance(type[, ...])：
+    /// 无额外参数时走无参实例化（与旧版一致）；有参数时按 ".ctor" 带参构造
+    static int l_patch_new_instance(lua_State *L) {
+        const patch_handle_t type = to_handle(L, 1);
+        const int argc = lua_gettop(L) - 1;
+        if (argc <= 0) {
+            push_handle(L, patchlib_type_new_instance(type));
+            return 1;
+        }
+        if (argc > MAX_CALL_ARGS) {
+            return luaL_error(L, "too many constructor arguments (max %d)", MAX_CALL_ARGS);
+        }
+        const patch_handle_t ctor = patchlib_type_get_method_by_param_count(type, ".ctor", argc);
+        return construct_instance(L, ctor, 2);
+    }
+
+    /// mod.patch.construct(ctor, ...)：使用显式构造函数句柄创建实例
+    static int l_patch_construct(lua_State *L) {
+        const patch_handle_t ctor = to_handle(L, 1);
+        if (!ctor) return luaL_error(L, "invalid constructor handle");
+        return construct_instance(L, ctor, 2);
+    }
+
+    // ========================================================================
+    // Patchlib: 托管字符串
+    // ========================================================================
+
+    /// mod.patch.string_create(s) -> 托管字符串句柄（由 Lua GC 管理）
+    static int l_patch_string_create(lua_State *L) {
+        const char *s = luaL_checkstring(L, 1);
+        push_owned_handle(L, patchlib_string_create(s));
+        return 1;
+    }
+
+    /// mod.patch.string_value(handle|string) -> Lua 字符串
+    static int l_patch_string_value(lua_State *L) {
+        const int t = lua_type(L, 1);
+        if (t == LUA_TSTRING || t == LUA_TNUMBER) {
+            lua_pushvalue(L, 1);
+            return 1;
+        }
+        push_managed_string(L, to_handle(L, 1));
+        return 1;
+    }
+
+    /// mod.patch.string_empty(handle) -> bool
+    static int l_patch_string_empty(lua_State *L) {
+        lua_pushboolean(L, patchlib_string_empty(to_handle(L, 1)));
+        return 1;
+    }
+
+    /// mod.patch.string_length(handle) -> int
+    static int l_patch_string_length(lua_State *L) {
+        lua_pushinteger(L, static_cast<lua_Integer>(patchlib_string_length(to_handle(L, 1))));
+        return 1;
+    }
+
+    // ========================================================================
+    // Patchlib: 句柄生命周期
+    // ========================================================================
+
+    /// mod.patch.retain(handle) -> 由 Lua GC 管理的句柄副本
+    /// 用于把 hook 临时对象跨帧缓存，避免内核释放原句柄后失效（Android 上为同一句柄）
+    static int l_patch_retain(lua_State *L) {
+        const patch_handle_t h = to_handle(L, 1);
+        if (!h) {
+            lua_pushnil(L);
+            return 1;
+        }
+        push_owned_handle(L, copy_handle(h));
+        return 1;
     }
 
     // ========================================================================
@@ -656,6 +863,10 @@ namespace lualoader::lua_api {
             return 1;
         }
         const char *type_name = luaL_checkstring(L, 3);
+        if (std::strcmp(type_name, "string") == 0) {
+            push_managed_string(L, *reinterpret_cast<void **>(&buffer));
+            return 1;
+        }
         patch_type_t type;
         if (!type_from_name(type_name, &type)) {
             return luaL_error(L, "unknown type name: %s", type_name);
@@ -674,6 +885,7 @@ namespace lualoader::lua_api {
         lua_mod_handle_t *handle{nullptr};
         int prefix_ref{LUA_NOREF};
         int postfix_ref{LUA_NOREF};
+        bool copy_handles{false}; ///< true 时把 instance/对象参数/返回值复制为 GC 托管句柄
         patch_hook_id_t hook_id{PATCH_HOOK_INVALID_ID};
     };
 
@@ -719,15 +931,33 @@ namespace lualoader::lua_api {
 #undef LUALOADER_DEFINE_TRAMPOLINE
 #undef LUALOADER_FOR_EACH_TRAMPOLINE
 
+    /// 压入一个参数值；copy_handles 时把对象/指针句柄复制为 GC 托管句柄
+    static void push_hook_arg_value(lua_State *L, const patch_type_t type, const void *value, const bool copy_handles) {
+        if (copy_handles && (type == PATCH_OBJECT || type == PATCH_POINTER) && value) {
+            auto *ptr = *static_cast<void *const *>(value);
+            if (ptr) {
+                push_owned_handle(L, copy_handle(ptr));
+                return;
+            }
+        }
+        push_patch_value(L, type, value);
+    }
+
     /// 钩子回调参数：instance、参数表 args（数组）、返回值 result
     static void push_hook_args(lua_State *L, patch_handle_t instance, void **args,
-                               const patch_method_signature_t *sig) {
-        if (instance) lua_pushlightuserdata(L, instance); else lua_pushnil(L);
+                               const patch_method_signature_t *sig, const bool copy_handles) {
+        if (!instance) {
+            lua_pushnil(L);
+        } else if (copy_handles) {
+            push_owned_handle(L, copy_handle(instance));
+        } else {
+            lua_pushlightuserdata(L, instance);
+        }
         const int argc = sig ? static_cast<int>(tefstd_vector_size(&sig->arg_types)) : 0;
         lua_createtable(L, argc, 0);
         for (int i = 0; i < argc; ++i) {
             const auto type = *static_cast<patch_type_t *>(tefstd_vector_at(&sig->arg_types, i));
-            push_patch_value(L, type, args[i]);
+            push_hook_arg_value(L, type, args[i], copy_handles);
             lua_rawseti(L, -2, i + 1);
         }
     }
@@ -741,9 +971,9 @@ namespace lualoader::lua_api {
         lua_State *L = s.L;
         const int base = lua_gettop(L);
         lua_rawgeti(L, LUA_REGISTRYINDEX, s.prefix_ref);
-        push_hook_args(L, instance, args, sig);
+        push_hook_args(L, instance, args, sig, s.copy_handles);
         if (result && sig && sig->return_type != PATCH_VOID) {
-            push_patch_value(L, sig->return_type, result);
+            push_hook_arg_value(L, sig->return_type, result, s.copy_handles);
         } else {
             lua_pushnil(L);
         }
@@ -771,9 +1001,9 @@ namespace lualoader::lua_api {
         lua_State *L = s.L;
         const int base = lua_gettop(L);
         lua_rawgeti(L, LUA_REGISTRYINDEX, s.postfix_ref);
-        push_hook_args(L, instance, args, sig);
+        push_hook_args(L, instance, args, sig, s.copy_handles);
         if (result && sig && sig->return_type != PATCH_VOID) {
-            push_patch_value(L, sig->return_type, result);
+            push_hook_arg_value(L, sig->return_type, result, s.copy_handles);
         } else {
             lua_pushnil(L);
         }
@@ -841,6 +1071,9 @@ namespace lualoader::lua_api {
         s.handle = get_handle(L);
         s.prefix_ref = ref_function_field(L, 2, "prefix");
         s.postfix_ref = ref_function_field(L, 2, "postfix");
+        lua_getfield(L, 2, "copy");
+        s.copy_handles = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
 
         if (s.prefix_ref == LUA_NOREF && s.postfix_ref == LUA_NOREF) {
             s = HookSlot{};
@@ -880,6 +1113,7 @@ namespace lualoader::lua_api {
             {"get_type", l_patch_get_type},
             {"get_basic_type", l_patch_get_basic_type},
             {"new_instance", l_patch_new_instance},
+            {"construct", l_patch_construct},
             {"get_parent", l_patch_get_parent},
             {"type_name", l_patch_type_name},
             {"is_valid", l_patch_is_valid},
@@ -894,6 +1128,12 @@ namespace lualoader::lua_api {
             {"set_field_raw", l_patch_field_set_raw},
             {"array_length", l_patch_array_length},
             {"array_at", l_patch_array_at},
+            {"string_create", l_patch_string_create},
+            {"string_value", l_patch_string_value},
+            {"string_empty", l_patch_string_empty},
+            {"string_length", l_patch_string_length},
+            {"retain", l_patch_retain},
+            {"copy", l_patch_retain},
             {"invoke", l_patch_invoke},
             {"install_hook", l_patch_install_hook},
             {"free", l_patch_free},
@@ -903,6 +1143,12 @@ namespace lualoader::lua_api {
     void register_api(lua_State *L, lua_mod_handle_t *handle) {
         lua_pushlightuserdata(L, handle);
         lua_setfield(L, LUA_REGISTRYINDEX, HANDLE_KEY);
+
+        // 托管句柄元表：__gc 由 Lua GC 自动释放内核句柄（Android 上释放为空操作）
+        luaL_newmetatable(L, OWNED_HANDLE_MT);
+        lua_pushcfunction(L, l_owned_handle_gc);
+        lua_setfield(L, -2, "__gc");
+        lua_pop(L, 1);
 
         // 钩子句柄元表：不再注册 __gc 自动卸载，钩子只在显式 :remove()
         // 或 Mod 卸载时移除（否则丢弃返回值会被 Lua GC 误卸载）
