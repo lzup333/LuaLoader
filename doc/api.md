@@ -1,0 +1,309 @@
+# LuaLoader API 文档
+
+LuaLoader 用 Lua 写 Mod，不用编译，一份脚本全平台通用。每个 Mod 跑在**独立**的 Lua 状态机里，
+脚本通过全局表 `mod` 访问一切能力。
+
+> 图省事的话，先看 [最小 Mod](#最小-mod)，再按需查下面的表。
+
+## 目录
+
+- [最小 Mod](#最小-mod)
+- [生命周期](#生命周期)
+- [`mod` 表](#mod-表)
+  - [环境信息](#环境信息)
+  - [日志](#日志)
+  - [文件](#文件)
+- [`mod.patch`：调用内核](#modpatch调用内核)
+  - [取类型与成员](#取类型与成员)
+  - [字段读写](#字段读写)
+  - [数组](#数组)
+  - [托管字符串](#托管字符串)
+  - [创建实例](#创建实例)
+  - [调用方法](#调用方法)
+  - [Hook](#hook)
+  - [句柄与生命周期](#句柄与生命周期)
+- [常见陷阱](#常见陷阱)
+- [完整示例](#完整示例)
+
+---
+
+## 最小 Mod
+
+一个 Mod 就是一个目录：
+
+```
+my_mod/
+├── Info.json               # 展示信息
+├── Manifest.json           # parentLoader 写 "lzup333.lualoader"
+├── luamod.json             # 入口脚本
+└── Resources/
+    └── lib/
+        └── main.lua
+```
+
+`luamod.json`：
+
+```json
+{ "main": "main.lua" }
+```
+
+`main.lua`：
+
+```lua
+mod.meta = { pkg_id = "lzup.lua.hello", version = "1.0.0" }
+
+function setup()
+    mod.info("hello from %s", mod.id)
+end
+
+todo_list = { "setup" }
+```
+
+加载器只执行入口脚本；其它 `.lua` 用 `require("文件名")` 按需加载（`package.path` 已包含 Mod 目录）。
+
+---
+
+## 生命周期
+
+**任务清单**是最推荐的写法：把函数定义在外面，清单里只写函数名，加载器按顺序执行：
+
+```lua
+function setup() end
+function android_setup() end
+
+todo_list = { "setup" }                    -- 通用
+todo_list_android = { "android_setup" }    -- 仅 Android
+-- todo_list_android_arm64 = { ... }       -- 仅 Android arm64
+```
+
+- 执行顺序：`todo_list` → `todo_list_<平台>` → `todo_list_<平台>_<架构>`。
+- 清单元素可以是函数名（字符串）或函数本身（`{ setup }`）。
+- 也可以用 `mod.init()` / `mod.cleanup()`：初始化时在任务清单之后调用，卸载时调用 `mod.cleanup()`。
+- 零星差异可直接判断：`if mod.platform == "android" then ... end`。
+
+---
+
+## `mod` 表
+
+### 环境信息
+
+| 字段 | 说明 |
+|---|---|
+| `mod.id` | Mod 的唯一 id（内核分配） |
+| `mod.version` | 版本字符串 |
+| `mod.platform` | `android` / `linux` / `windows` / `macos` / `ios` / `unknown` |
+| `mod.arch` | `arm64` / `arm` / `x64` / `x86` / `unknown` |
+| `mod.mod_dir` | 存放脚本的目录 |
+| `mod.private_dir` | Mod 私有数据目录（文件 API 的根） |
+
+`mod.meta`（可选）可覆盖 `luamod.json` 里的信息：
+
+```lua
+mod.meta = { pkg_id = "...", version = "1.0.0", version_code = 1, api_version = 1 }
+```
+
+### 日志
+
+```lua
+mod.log("info", "x =", 42)          -- 通用写法，level 为字符串或数字 0~6
+mod.info("玩家 %s 已锁定", name)     -- 快捷方法
+```
+
+快捷方法：`mod.trace` / `mod.debug` / `mod.info` / `mod.warn` / `mod.error` / `mod.fatal`。
+多参数会用空格拼接，非字符串会转成字符串。
+
+### 文件
+
+只能在 `mod.private_dir` 内读写，禁止绝对路径和 `..`：
+
+```lua
+local data, err = mod.read_file("config.txt")  -- 失败返回 nil, err
+mod.write_file("config.txt", "hello")          -- 成功返回 true
+mod.file_exists("config.txt")                  -- true / false
+```
+
+> Mod 可使用完整的 Lua 标准库（`io` / `os` / `debug` 等），但仍不能加载原生 C 模块（`.so`）。
+
+---
+
+## `mod.patch`：调用内核
+
+`mod.patch` 把内核 patchlib 的类型 / 字段 / 方法 / 钩子能力交给 Lua。所有“句柄”在 Lua 里是
+lightuserdata（借用）或 GC 托管 userdata（自有），都能直接互相传参。
+
+### 取类型与成员
+
+```lua
+local player = mod.patch.get_type("Terraria", "Player")  -- 命名空间 + 类名
+local field  = mod.patch.get_field(player, "statMana")
+local prop   = mod.patch.get_property(player, "someProp")
+local method = mod.patch.get_method(player, "ResetEffects", 0)  -- 无参重载
+local method2 = mod.patch.get_method(player, "Foo")             -- 单参时可省略个数
+```
+
+其它：
+
+| 函数 | 说明 |
+|---|---|
+| `get_basic_type(name)` | 基础类型，如 `"int32"` / `"float"` / `"object"` |
+| `type_name(handle)` | 类型名 |
+| `get_parent(type)` | 父类型 |
+| `is_valid(handle)` | 句柄是否有效 |
+| `free(handle)` | 手动释放句柄（一般不用，见下） |
+
+### 字段读写
+
+```lua
+mod.patch.get_field_value(field, instance[, type])       -- instance 为 nil 表示静态字段
+mod.patch.set_field_value(field, instance, value[, type])
+```
+
+`type` 可省略（由内核查），但**建议显式写**，Android 上**必须写**（走真实指针，类型不明确会读错）。
+
+可用类型名：`void` `int8` `int16` `int32` `int64` `uint8` `uint16` `uint32` `uint64`
+`bool` `float` `double` `pointer` `object` `char`，以及伪类型 `string`。
+
+结构体（如 `Vector2`，即两个 `float` 开头）：
+
+```lua
+local x, y = mod.patch.get_field_vec2(field, instance)
+mod.patch.set_field_vec2(field, instance, x, y)
+```
+
+任意原始字节（长度 1~16，可配 `string.pack/unpack`）：
+
+```lua
+local raw = mod.patch.get_field_raw(field, instance)   -- 失败返回 nil
+mod.patch.set_field_raw(field, instance, raw)
+```
+
+### 数组
+
+```lua
+local n   = mod.patch.array_length(array)
+local obj = mod.patch.array_at(array, i)              -- 省略类型时按对象(指针)处理
+local num = mod.patch.array_at(array, i, "float")     -- 值类型数组需给类型名
+```
+
+对象数组（如 `Main.npc`）的句柄来自静态字段：
+
+```lua
+local arr = mod.patch.get_field_value(mod.patch.get_field(Main, "npc"), nil, "object")
+```
+
+### 托管字符串
+
+`System.String` 可以当 Lua 字符串读写，把类型写成 `"string"`：
+
+```lua
+local name = mod.patch.get_field_value(field, instance, "string")  -- 返回 Lua 字符串
+mod.patch.set_field_value(field, instance, "你好", "string")
+local s = mod.patch.array_at(array, i, "string")
+```
+
+需要手动构造/检查时：
+
+```lua
+local h = mod.patch.string_create("hello")  -- 句柄由 Lua GC 管理
+mod.patch.string_value(h)                   -- "hello"（也可直接传普通 Lua 字符串）
+mod.patch.string_empty(h)                   -- false
+mod.patch.string_length(h)                  -- 5
+```
+
+### 创建实例
+
+```lua
+local obj  = mod.patch.new_instance(type)          -- 无参
+local obj2 = mod.patch.new_instance(type, 1, "x")  -- 按 ".ctor" 参数个数自动匹配构造函数
+local ctor = mod.patch.get_method(type, ".ctor", 2)
+local obj3 = mod.patch.construct(ctor, 1, "x")     -- 用显式构造函数
+```
+
+### 调用方法
+
+```lua
+local r = mod.patch.invoke(method, [instance,] ...)
+```
+
+实例方法要传 `instance`（静态方法第一个参数就是实参，无需 instance）。
+返回值：对象/引用类型得到句柄，无返回值得到 `nil`。
+
+### Hook
+
+```lua
+local hook = mod.patch.install_hook(method, {
+    -- 原方法执行前：返回 true 表示跳过原方法（可选再返回一个值作为返回值）
+    prefix = function(instance, args, result) return false end,
+    -- 原方法执行后：result 是原方法的返回值
+    postfix = function(instance, args, result) end,
+})
+
+hook:remove()   -- 手动卸载
+```
+
+- `args` 是 1 起始的参数数组；`instance` 是对象实例（静态方法为 `nil`）。
+- `prefix` / `postfix` 至少写一个；最多 32 个钩子。
+- 钩子装上后一直有效，直到 `hook:remove()` 或 Mod 卸载（丢弃返回值不会导致失效）。
+- `{ copy = true }`：把 `instance`、对象参数、对象返回值包成 **GC 托管副本**，可安全跨帧缓存
+  （见下）。默认不开，行为与不加时完全一致。
+
+### 句柄与生命周期
+
+普通 API 返回的句柄是**借用的**，只在当前调用内有效——尤其 hook 里的 `instance` / 对象参数，
+回调结束后会被内核释放。**不要把它们直接存进表里跨帧使用。**
+
+需要跨帧缓存时，用 `retain` 拿到 **GC 托管副本**（不必手动 `free`）：
+
+```lua
+local npc = mod.patch.retain(instance)   -- 可以安全地存起来
+```
+
+或者给 hook 加 `copy = true`：
+
+```lua
+mod.patch.install_hook(method, { postfix = on_ai, copy = true })
+```
+
+托管副本只是同一对象的另一个句柄，读写字段仍然作用于原对象；Lua GC 在不再引用时自动释放。
+
+---
+
+## 常见陷阱
+
+- **Android 一定要显式写字段类型**（如 `"int32"`），否则可能读错。
+- **不要在 hook 里跨帧缓存 `instance`**（会悬垂）；要缓存用 `retain` 或 `copy = true`。
+- **想修改原对象**，直接对原 `instance` 读写即可；`copy`/`retain` 得到的是同对象的另一个句柄，
+  一样能改。
+- Hook 时机：想让你的改动**不被原版每帧逻辑覆盖**，用 `postfix`；想**拦截/替换**，用 `prefix`
+  返回 `true`。
+- 字段/方法可能因游戏版本差异缺失，取不到时记得判空再继续。
+
+---
+
+## 完整示例
+
+每帧把玩家魔力补满（`LuaManaLock/Resources/lib/main.lua`）：
+
+```lua
+mod.meta = { pkg_id = "lzup.lua.manalock", version = "1.0.0" }
+
+local stat_mana
+local stat_mana_max
+
+function lock_mana(instance)
+    local max = mod.patch.get_field_value(stat_mana_max, instance, "int32")
+    mod.patch.set_field_value(stat_mana, instance, max, "int32")
+end
+
+function setup()
+    local player = mod.patch.get_type("Terraria", "Player")
+    if not player then return end
+
+    stat_mana = mod.patch.get_field(player, "statMana")
+    stat_mana_max = mod.patch.get_field(player, "statManaMax")
+
+    mod.patch.install_hook(mod.patch.get_method(player, "ResetEffects", 0), { postfix = lock_mana })
+end
+
+todo_list = { "setup" }
+```

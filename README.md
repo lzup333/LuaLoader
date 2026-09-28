@@ -7,6 +7,8 @@ LuaLoader 是 TEFKernel 的一个 ModLoader：内核负责注入和底层 hook�
 
 > 作者：lzup333
 
+📖 **API 文档**：[`doc/api.md`](doc/api.md) —— 极简教学，从最小 Mod 到完整 `mod.patch` 用法。
+
 ## 它做什么
 
 - 加载 Mod 目录里的 `main.lua`，跑脚本、管生命周期、装钩子；
@@ -135,6 +137,8 @@ todo_list_android = { "android_setup" }        -- 只在 Android 执行
 清单里的元素也可以直接写函数（`{ setup }`）。零星差异也可以用 `if mod.platform == "android" then ... end`。
 
 ## `mod.patch`（调用内核能力）
+
+> 完整 API 与教学示例见 [`doc/api.md`](doc/api.md)。
 
 取类型/字段/方法：
 
