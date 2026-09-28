@@ -5,7 +5,7 @@ mod.meta = { pkg_id = "lzup.lua.manalock", version = "1.0.0" }
 
 local stat_mana
 local stat_mana_max
-local fired = false
+local fired = false -- 用于避免一直输出日志
 
 function lock_mana(instance)
     if not fired then
