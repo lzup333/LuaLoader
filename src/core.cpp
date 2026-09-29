@@ -382,10 +382,24 @@ namespace {
     }
 
     void install_debug_hooks() {
-        // 每帧 tick（XNAUnityRunner.Update，全局命名空间）
-        const patch_handle_t ut = patchlib_type_get_type("", "XNAUnityRunner");
-        const patch_handle_t um = ut ? patchlib_type_get_method_by_param_count(ut, "Update", 0) : nullptr;
-        if (um) g_hook_frame = patchlib_install_prepost_hook(um, nullptr, frame_postfix);
+        const patch_handle_t main_type = patchlib_type_get_type("Terraria", "Main");
+
+        // 每帧 tick：优先跨平台目标 Terraria.Main.Update(GameTime)（PC/PE 都有），
+        // 退回 Main.DoUpdate / Player.ResetEffects / PE 的 XNAUnityRunner.Update
+        patch_handle_t frame_method = nullptr;
+        if (main_type) {
+            frame_method = patchlib_type_get_method_by_param_count(main_type, "Update", 1);
+            if (!frame_method) frame_method = patchlib_type_get_method_by_param_count(main_type, "DoUpdate", 1);
+        }
+        if (!frame_method) {
+            const patch_handle_t player_type = patchlib_type_get_type("Terraria", "Player");
+            if (player_type) frame_method = patchlib_type_get_method_by_param_count(player_type, "ResetEffects", 0);
+        }
+        if (!frame_method) {
+            const patch_handle_t ut = patchlib_type_get_type("", "XNAUnityRunner");
+            if (ut) frame_method = patchlib_type_get_method_by_param_count(ut, "Update", 0);
+        }
+        if (frame_method) g_hook_frame = patchlib_install_prepost_hook(frame_method, nullptr, frame_postfix);
 
         // 聊天指令（单机 ProcessIncomingMessage / 联机 SendChatMessageFromClient）
         const patch_handle_t ct = patchlib_type_get_type("Terraria.Chat", "ChatCommandProcessor");
@@ -402,7 +416,6 @@ namespace {
             const patch_handle_t text_prop = patchlib_type_get_property(msg_type, "Text");
             if (text_prop) g_get_msg_text = patchlib_property_get_get_method(text_prop);
         }
-        const patch_handle_t main_type = patchlib_type_get_type("Terraria", "Main");
         if (main_type) {
             g_my_player_field = patchlib_type_get_field(main_type, "myPlayer");
             g_new_text_method = patchlib_type_get_method_by_param_count(main_type, "NewText", 5);
@@ -487,8 +500,8 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
-            3,
-            "1.2.0",
+            4,
+            "1.2.1",
             1,
             0,
             nullptr,
