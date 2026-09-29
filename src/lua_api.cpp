@@ -36,6 +36,9 @@ extern "C" {
 }
 
 #include "logger.hpp"
+#ifdef LUALOADER_GUI
+#include "gui.hpp"
+#endif
 
 #include "tefkernel/patchlib/field.h"
 #include "tefkernel/patchlib/method.h"
@@ -1538,6 +1541,10 @@ namespace lualoader::lua_api {
         lua_newtable(L);
         luaL_setfuncs(L, mod_patch_functions, 0);
         lua_setfield(L, -2, "patch");
+
+#ifdef LUALOADER_GUI
+        lualoader::gui::register_api(L, handle);
+#endif
 
         lua_pushvalue(L, -1);
         lua_setglobal(L, "mod");

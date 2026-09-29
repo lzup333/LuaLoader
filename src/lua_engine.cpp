@@ -287,6 +287,7 @@ namespace lualoader::lua_engine {
         read_info(L, handle);
         handle->init_ref = ref_global_field(L, "init");
         handle->cleanup_ref = ref_global_field(L, "cleanup");
+        handle->gui_ref = ref_global_field(L, "on_gui");
         return true;
     }
 
@@ -307,6 +308,11 @@ namespace lualoader::lua_engine {
     void call_cleanup(lua_mod_handle_t *handle) {
         if (!handle || !handle->L) return;
         protected_call(handle->L, handle->cleanup_ref, "mod.cleanup");
+    }
+
+    void call_on_gui(lua_mod_handle_t *handle) {
+        if (!handle || !handle->L) return;
+        protected_call(handle->L, handle->gui_ref, "mod.on_gui");
     }
 
     void uninstall_hooks(lua_mod_handle_t *handle) {

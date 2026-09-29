@@ -120,6 +120,38 @@ todo_list = { "setup" }
 - `mod.init()`：Mod 初始化时调用
 - `mod.cleanup()`：Mod 卸载时调用
 
+## 内置 GUI（`mod.gui` / `mod.on_gui`）
+
+LuaLoader 内置了 **Dear ImGui**，Mod 可以直接用 Lua 画界面，无需额外的原生插件。
+
+- 只要定义了 `function mod.on_gui()`，加载器就会**自动为该 Mod 创建一个独立窗口**并每帧回调，
+  Mod 不用自己管 `Begin/End`。
+- 界面只在**调试模式**（`config.json` 里 `debug: true`）下渲染：PC 端按 `Insert` 在
+  “鼠标交给 GUI / 还给游戏”之间切换；Android 端直接用触摸操作。
+- 渲染后端：PC 走 FNA3D 的 OpenGL 后端（会自动设置 `SDL_GPU_DRIVER=opengl`，用户已设置则不覆盖）；
+  Android 走 Unity 的 **OpenGL ES + `eglSwapBuffers` 叠加**。
+- 高 DPI 自动缩放：字号与控件随屏幕尺寸一起放大，手机上看不费眼。
+
+```lua
+local speed = 3.0
+local name = ""
+
+function mod.on_gui()
+    mod.gui.text("示例界面")
+    mod.gui.separator()
+    speed = mod.gui.slider("speed", speed, 1.0, 10.0)
+    if mod.gui.button("点我") then mod.info("clicked") end
+    name = mod.gui.input_text("名字", name)   -- 自带屏幕虚拟键盘（手机友好）
+    mod.gui.text("你好，" .. name)
+end
+```
+
+可用控件：`text` / `text_wrapped` / `button` / `checkbox` / `slider` / `same_line` /
+`separator` / `spacing` / `collapsing_header` / `progress_bar` / `input_text`。
+
+> `input_text` 不使用 ImGui 的 `InputText`，而是自绘输入框 + 底部虚拟键盘，
+> 点虚拟键不会失焦；桌面端也可直接用物理键盘输入。
+
 ## 平台差异
 
 推荐用“任务清单”：把函数定义写在外面，清单里只写函数名，加载器按 `todo_list` →

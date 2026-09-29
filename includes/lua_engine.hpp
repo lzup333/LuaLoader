@@ -51,6 +51,7 @@ namespace lualoader {
         lua_mod_info_t info;
         int init_ref{LUA_NOREF};    ///< mod.init 的注册表引用
         int cleanup_ref{LUA_NOREF}; ///< mod.cleanup 的注册表引用
+        int gui_ref{LUA_NOREF};     ///< mod.on_gui 的注册表引用（ImGui 即时模式）
         std::vector<int> hook_slots; ///< 该 Mod 申请的钩子槽位（用于卸载时清理）
     };
 
@@ -75,6 +76,9 @@ namespace lualoader {
 
         /// 调用 Mod 的 mod.cleanup 回调（若存在）
         void call_cleanup(lua_mod_handle_t *handle);
+
+        /// 调用 Mod 的 mod.on_gui 回调（若存在）；在 ImGui 帧内执行
+        void call_on_gui(lua_mod_handle_t *handle);
 
         /// 卸载该 Mod 安装的所有钩子
         void uninstall_hooks(lua_mod_handle_t *handle);

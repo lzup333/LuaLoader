@@ -31,6 +31,9 @@
 #include "logger.hpp"
 #include "lua_engine.hpp"
 #include "platform.hpp"
+#ifdef LUALOADER_GUI
+#include "gui.hpp"
+#endif
 
 #include <cstdint>
 #include <set>
@@ -260,6 +263,12 @@ void lualoader::core::reload_all_mods() {
     show_chat(msg.c_str());
 }
 
+void lualoader::core::call_all_on_gui() {
+    for (auto &kv: lua_mod_handles) {
+        lua_engine::call_on_gui(kv.second);
+    }
+}
+
 ml_result_t lualoader::core::init_mod(mod_manifest_t *mod_manifest) {
     if (!mod_manifest || !mod_manifest->mod_id) return ML_ERROR_INVALID_PARAM;
     LOG_INFO("Initializing Lua mod: {}", mod_manifest->mod_id);
@@ -465,6 +474,27 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
         if (g_debug) install_debug_hooks();
     }
 
+#ifdef LUALOADER_GUI
+    // 内置 ImGui GUI 属于调试工具：仅 config.json 里 debug=true 时启用。
+    if (g_debug) {
+        // ImGui 的 OpenGL 后端需要 OpenGL 上下文。
+        // FNA3D(v26) 默认走 SDL_GPU(Vulkan)；在 SDL 初始化之前把 SDL_GPU 驱动指向不可用的
+        // 值，FNA3D 会回退到自带的 OpenGL 后端。用户若已显式设置则不覆盖（保留逃生舱）。
+#if !defined(_WIN32) && !defined(_WIN64) && !defined(__ANDROID__)
+        if (std::getenv("SDL_GPU_DRIVER") == nullptr) {
+            setenv("SDL_GPU_DRIVER", "opengl", 0);
+            LOG_INFO("[gui] set SDL_GPU_DRIVER=opengl to use FNA3D OpenGL backend");
+        } else {
+            LOG_INFO("[gui] SDL_GPU_DRIVER already set to '{}', keep it", std::getenv("SDL_GPU_DRIVER"));
+        }
+#endif
+        // hook 渲染后端出帧函数（Main.Draw 后置）
+        gui::install();
+    } else {
+        LOG_INFO("[gui] GUI disabled (set debug=true in config.json to enable)");
+    }
+#endif
+
     LOG_INFO("LuaLoader initialized successfully");
     return ML_SUCCESS;
 }
@@ -500,8 +530,8 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
-            5,
-            "1.3.0",
+            6,
+            "1.4.0",
             1,
             0,
             nullptr,

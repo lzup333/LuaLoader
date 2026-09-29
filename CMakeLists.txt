@@ -21,13 +21,24 @@ endif ()
 add_subdirectory(lib/spdlog-1.17.0)
 add_subdirectory(lib/lua-5.4.8)
 
-add_library(LuaLoader SHARED
+# 可选: 内置 Dear ImGui GUI（默认关，避免影响各平台发布；PoC 阶段用 -DLUALOADER_GUI=ON）
+option(LUALOADER_GUI "Build with built-in Dear ImGui GUI support" OFF)
+if (LUALOADER_GUI)
+    add_subdirectory(lib/imgui)
+endif()
+
+set(LUALOADER_SOURCES
         src/core.cpp
         src/logger.cpp
         src/lua_engine.cpp
         src/lua_api.cpp
         includes/tefkernel/tef_api_imp.c
 )
+if (LUALOADER_GUI)
+    list(APPEND LUALOADER_SOURCES src/gui.cpp)
+endif()
+
+add_library(LuaLoader SHARED ${LUALOADER_SOURCES})
 
 target_include_directories(LuaLoader
         PUBLIC
@@ -38,6 +49,15 @@ target_link_libraries(LuaLoader
         spdlog::spdlog
         lua
 )
+
+if (LUALOADER_GUI)
+    target_compile_definitions(LuaLoader PRIVATE LUALOADER_GUI=1)
+    target_link_libraries(LuaLoader imgui)
+    if (ANDROID)
+        # Android 上 ImGui 走 OpenGL ES 3 + eglSwapBuffers 钩子
+        target_link_libraries(LuaLoader EGL GLESv3)
+    endif()
+endif()
 
 if (MINGW)
     # 静态链接 MinGW 运行库，避免目标机缺少
