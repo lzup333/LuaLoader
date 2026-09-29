@@ -253,8 +253,7 @@ hook:remove()   -- 手动卸载
 
 ## 示范 Mod
 
-项目里的 `LuaManaLock/` 是一个完整示范（魔力锁定）。更多 Mod（例如锁血的 `LuaHealthLock`）
-放在单独的 `LuaMods` 项目里。
+项目里的 `LuaManaLock/` 是一个完整示范（魔力锁定）。
 
 ## 打包和部署
 

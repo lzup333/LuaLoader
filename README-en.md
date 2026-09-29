@@ -186,8 +186,7 @@ At least one of `prefix`/`postfix` is required. Up to 32 hooks per loader. A hoo
 
 ## Demo
 
-`LuaManaLock/` in this project is a complete demo (mana lock). More mods (e.g. `LuaHealthLock`, a
-health lock) live in the separate `LuaMods` project.
+`LuaManaLock/` in this project is a complete demo (mana lock).
 
 ## Packaging and deployment
 

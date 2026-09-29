@@ -46,4 +46,7 @@ namespace lualoader::core {
     ml_result_t cleanup_ml(ml_entry_t *ml_entry);
 
     const ml_info_t *get_info();
+
+    /// 重载 LuaLoader 管理的所有 Mod（供调试工具的 /reload 使用）
+    void reload_all_mods();
 } // namespace lualoader::core

@@ -42,6 +42,8 @@ namespace lualoader {
         std::string mod_id;      ///< Mod 唯一标识符（由内核分配）
         std::string mod_dir;     ///< 存放 mod.json 与 lua 源文件的目录
         std::string private_dir; ///< Mod 私有数据目录（read_file / write_file 的根）
+        std::string logs_dir;    ///< Mod 日志目录（内核传入）
+        std::string config_path; ///< Mod 配置文件路径（重载时重建 manifest 用）
         std::string entry;       ///< 入口 lua 文件（相对 <private_dir>/lib）
         std::string platform;    ///< 运行平台（android/linux/windows/macos/ios/unknown）
         std::string arch;        ///< 运行架构（arm64/arm/x64/x86/unknown）
