@@ -255,6 +255,29 @@ hook:remove()   -- 手动卸载
 
 项目里的 `LuaManaLock/` 是一个完整示范（魔力锁定）。
 
+## 调试模式与热重载
+
+LuaLoader 有一个隐藏配置文件，放在**加载器自己的私有目录**（普通玩家在 Mod 包里看不到）：
+
+```
+<工作目录>/modloader/private/lzup333.lualoader/config.json
+```
+
+```json
+{ "debug": false }
+```
+
+把 `debug` 改成 `true` 并重启游戏后，就能在**游戏聊天框**输入：
+
+- `/reload` —— 重新扫描并同步所有 Mod：
+  - 新启用的 Mod → **热加载**；
+  - 已禁用的 Mod → 热卸载；
+  - 正在运行的 Mod → 热重载（重跑脚本与 `setup`）。
+
+改完 `.lua` 保存、再 `/reload` 即可生效，**不用重新编译、不用退游戏**，热重载后会自动重新安装钩子。
+
+> 提示：管理器的“启用/禁用”是异步落盘的，切换后等几秒再 `/reload`。
+
 ## 打包和部署
 
 打包需要 TEFPkg-Tool：把各平台的 `libloader.<平台>.<架构>.so` 打进 `lualoader.tefpkg`，

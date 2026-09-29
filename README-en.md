@@ -188,6 +188,29 @@ At least one of `prefix`/`postfix` is required. Up to 32 hooks per loader. A hoo
 
 `LuaManaLock/` in this project is a complete demo (mana lock).
 
+## Debug mode & hot reload
+
+LuaLoader has a hidden config in the loader's own private directory (players won't see it in a mod package):
+
+```
+<workdir>/modloader/private/lzup333.lualoader/config.json
+```
+
+```json
+{ "debug": false }
+```
+
+Set `debug` to `true` and restart the game, then type in the in-game chat:
+
+- `/reload` — rescan and sync all mods:
+  - newly enabled mods → **hot-load**;
+  - disabled mods → hot-unload;
+  - running mods → hot-reload (re-runs the script and `setup`).
+
+Edit a `.lua`, save, `/reload` — no rebuild, no game restart. Hooks are re-installed after reload.
+
+> Note: the manager writes the enable state asynchronously; wait a few seconds after toggling before `/reload`.
+
 ## Packaging and deployment
 
 Package the per-platform `libloader.<platform>.<arch>.so` into `lualoader.tefpkg` with TEFPkg-Tool,
