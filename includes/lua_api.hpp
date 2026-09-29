@@ -44,4 +44,12 @@ namespace lualoader::lua_api {
     /// 卸载 handle 上安装的所有钩子并释放槽位
     void uninstall_all_hooks(lua_mod_handle_t *handle);
 
+    /**
+     * @brief 若脚本定义了 mod.on_gui，则挂到 XNAUnityRunner.OnGUI 的 postfix 上
+     *
+     * 该方法是空实现、由 Unity 每帧在 IMGUI 阶段调用，因此非常适合作为
+     * 每帧绘制入口。mod.gui.* 只在 on_gui 回调里调用才有效。
+     */
+    void install_gui_hook(lua_mod_handle_t *handle);
+
 } // namespace lualoader::lua_api

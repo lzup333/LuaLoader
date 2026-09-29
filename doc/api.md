@@ -22,6 +22,7 @@ LuaLoader 用 Lua 写 Mod，不用编译，一份脚本全平台通用。每个 
   - [调用方法](#调用方法)
   - [Hook](#hook)
   - [句柄与生命周期](#句柄与生命周期)
+- [`mod.gui`：即时模式界面](#modgui即时模式界面peunity)
 - [常见陷阱](#常见陷阱)
 - [完整示例](#完整示例)
 
@@ -265,6 +266,46 @@ mod.patch.install_hook(method, { postfix = on_ai, copy = true })
 ```
 
 托管副本只是同一对象的另一个句柄，读写字段仍然作用于原对象；Lua GC 在不再引用时自动释放。
+
+---
+
+## `mod.gui`：即时模式界面（PE/Unity）
+
+在 PE（手机端，Unity）上，LuaLoader 会把脚本里的 `mod.on_gui` 挂到 `XNAUnityRunner.OnGUI` 上，
+每帧回调一次。在回调里用 `mod.gui.*` 描述界面（类似 ImGui 的即时模式），底层是 Unity 的 `GUILayout`。
+
+```lua
+function mod.on_gui()
+    mod.gui.begin_vertical()
+    mod.gui.box("我的面板")
+    mod.gui.label("你好")
+    if mod.gui.button("点我") then
+        mod.info("clicked")
+    end
+    mod.gui.end_vertical()
+end
+```
+
+可用函数：
+
+| 函数 | 返回 | 说明 |
+|:--|:--|:--|
+| `mod.gui.label(text)` | – | 文本 |
+| `mod.gui.box(text)` | – | 带边框的框 |
+| `mod.gui.button(text)` | `bool` | 按钮，点击返回 `true` |
+| `mod.gui.toggle(value, text)` | `bool` | 复选框 |
+| `mod.gui.slider(value, min, max)` | `number` | 水平滑条 |
+| `mod.gui.space(px)` | – | 空隙 |
+| `mod.gui.begin_horizontal()` / `end_horizontal()` | – | 水平布局 |
+| `mod.gui.begin_vertical()` / `end_vertical()` | – | 垂直布局 |
+
+注意：
+
+- **只能在 `mod.on_gui` 里调用**，其它地方调用会报错（Unity IMGUI 的限制）；
+- 目前基于 Unity 的 `GUILayout`（自动布局），暂不支持自定义坐标 / 独立窗口；
+- 仅 PE(Unity) 有效；PC(Linux/Windows) 取不到 `XNAUnityRunner`，`on_gui` 不会挂载（只记一条警告）。
+
+参考示范：`Mods/LuaMods/LuaGuiDemo/`。
 
 ---
 
