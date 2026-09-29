@@ -27,6 +27,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <array>
+#include <utility>
 
 extern "C" {
 #include "lua.h"
@@ -48,7 +50,7 @@ namespace lualoader::lua_api {
     static constexpr const char *HANDLE_KEY = "lualoader.mod.handle";
     static constexpr const char *HOOK_METATABLE = "LuaLoader.Hook";
     static constexpr const char *OWNED_HANDLE_MT = "LuaLoader.OwnedHandle";
-    static constexpr int MAX_HOOK_SLOTS = 32;
+    static constexpr int MAX_HOOK_SLOTS = 1024;
     static constexpr int MAX_CALL_ARGS = 16;
 
     // ========================================================================
@@ -876,6 +878,308 @@ namespace lualoader::lua_api {
     }
 
     // ========================================================================
+    // Patchlib: 数组写入 / 创建 / 原始字节 / 属性桥接 / 按名选重载
+    // ========================================================================
+
+    /// 依据 Lua 值推断写入类型（显式类型由调用方给出）
+    static patch_type_t infer_set_type(lua_State *L, const int idx, void *out, std::vector<patch_handle_t> &owned) {
+        const int t = lua_type(L, idx);
+        if (t == LUA_TBOOLEAN) return PATCH_BOOL;
+        if (t == LUA_TNUMBER) return lua_isinteger(L, idx) ? PATCH_INT32 : PATCH_FLOAT;
+        if (t == LUA_TLIGHTUSERDATA) {
+            *static_cast<void **>(out) = lua_touserdata(L, idx);
+            return PATCH_OBJECT;
+        }
+        if (t == LUA_TSTRING) {
+            patch_handle_t s = patchlib_string_create(lua_tostring(L, idx));
+            owned.push_back(s);
+            *static_cast<void **>(out) = s;
+            return PATCH_OBJECT;
+        }
+        *static_cast<void **>(out) = nullptr;
+        return PATCH_OBJECT;
+    }
+
+    /// 计算单个元素的写入缓冲；type_idx 为显式类型参数位置（无则按值推断）
+    static void read_element(lua_State *L, const int val_idx, const int type_idx, void *out,
+                             std::vector<patch_handle_t> &owned) {
+        if (!lua_isnoneornil(L, type_idx)) {
+            const char *tn = luaL_checkstring(L, type_idx);
+            if (std::strcmp(tn, "string") == 0 || std::strcmp(tn, "object") == 0) {
+                if (lua_type(L, val_idx) == LUA_TSTRING) {
+                    patch_handle_t s = patchlib_string_create(lua_tostring(L, val_idx));
+                    owned.push_back(s);
+                    *static_cast<void **>(out) = s;
+                } else {
+                    *static_cast<void **>(out) = lua_touserdata(L, val_idx);
+                }
+                return;
+            }
+            patch_type_t type;
+            if (!type_from_name(tn, &type)) luaL_error(L, "unknown type name: %s", tn);
+            read_patch_value(L, val_idx, type, out);
+            return;
+        }
+        infer_set_type(L, val_idx, out, owned);
+    }
+
+    /// mod.patch.array_set(array, index, value[, type]) -> bool
+    static int l_patch_array_set(lua_State *L) {
+        const patch_handle_t array = to_handle(L, 1);
+        if (!array) return luaL_error(L, "invalid array handle");
+        const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
+        uint64_t buffer = 0;
+        std::vector<patch_handle_t> owned;
+        read_element(L, 3, 4, &buffer, owned);
+        const bool ok = patchlib_array_set(array, index, &buffer);
+        for (const patch_handle_t h: owned) patchlib_free(h);
+        lua_pushboolean(L, ok);
+        return 1;
+    }
+
+    /// mod.patch.array_fill(array, value[, type]) -> bool
+    static int l_patch_array_fill(lua_State *L) {
+        const patch_handle_t array = to_handle(L, 1);
+        if (!array) return luaL_error(L, "invalid array handle");
+        uint64_t buffer = 0;
+        std::vector<patch_handle_t> owned;
+        read_element(L, 2, 3, &buffer, owned);
+        const bool ok = patchlib_array_fill(array, &buffer);
+        for (const patch_handle_t h: owned) patchlib_free(h);
+        lua_pushboolean(L, ok);
+        return 1;
+    }
+
+    /// mod.patch.array_create(size, elem_type) -> 数组句柄（GC 托管）
+    /// elem_type 可为类型句柄、基础类型名（"int32"/"float"...）或类型全名
+    static int l_patch_array_create(lua_State *L) {
+        const size_t size = static_cast<size_t>(luaL_checkinteger(L, 1));
+        patch_handle_t elem_type = nullptr;
+        if (lua_type(L, 2) == LUA_TLIGHTUSERDATA) {
+            elem_type = to_handle(L, 2);
+        } else {
+            const char *tn = luaL_checkstring(L, 2);
+            patch_type_t bt;
+            if (type_from_name(tn, &bt)) elem_type = patchlib_get_basic_type(bt);
+            if (!elem_type) elem_type = patchlib_type_get_type("", tn);
+        }
+        push_owned_handle(L, elem_type ? patchlib_array_create(size, elem_type) : nullptr);
+        return 1;
+    }
+
+    /// mod.patch.array_at_raw(array, index, size) -> string(原始字节) | nil
+    static int l_patch_array_at_raw(lua_State *L) {
+        const patch_handle_t array = to_handle(L, 1);
+        if (!array) return luaL_error(L, "invalid array handle");
+        const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
+        const size_t size = static_cast<size_t>(luaL_checkinteger(L, 3));
+        if (size == 0 || size > 64) return luaL_error(L, "bad size (1..64)");
+        unsigned char buf[64];
+        std::memset(buf, 0, size);
+        if (!patchlib_array_at(array, index, buf)) {
+            lua_pushnil(L);
+            return 1;
+        }
+        lua_pushlstring(L, reinterpret_cast<const char *>(buf), size);
+        return 1;
+    }
+
+    /// mod.patch.array_set_raw(array, index, bytes) -> bool
+    static int l_patch_array_set_raw(lua_State *L) {
+        const patch_handle_t array = to_handle(L, 1);
+        if (!array) return luaL_error(L, "invalid array handle");
+        const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
+        size_t len = 0;
+        const char *data = luaL_checklstring(L, 3, &len);
+        if (len == 0 || len > 64) return luaL_error(L, "bad size (1..64)");
+        unsigned char buf[64];
+        std::memcpy(buf, data, len);
+        lua_pushboolean(L, patchlib_array_set(array, index, buf));
+        return 1;
+    }
+
+    /// mod.patch.property_get_method(prop) -> getter 方法句柄
+    static int l_patch_property_get_method(lua_State *L) {
+        push_handle(L, patchlib_property_get_get_method(to_handle(L, 1)));
+        return 1;
+    }
+
+    /// mod.patch.property_set_method(prop) -> setter 方法句柄
+    static int l_patch_property_set_method(lua_State *L) {
+        push_handle(L, patchlib_property_get_set_method(to_handle(L, 1)));
+        return 1;
+    }
+
+    /// mod.patch.get_method_by_names(type, name, {names...}) -> method 句柄 | nil
+    static int l_patch_get_method_by_names(lua_State *L) {
+        const patch_handle_t type = to_handle(L, 1);
+        const char *name = luaL_checkstring(L, 2);
+        luaL_checktype(L, 3, LUA_TTABLE);
+        const int n = static_cast<int>(luaL_len(L, 3));
+        if (n < 0 || n > MAX_CALL_ARGS) return luaL_error(L, "bad param count");
+        std::vector<std::string> store;
+        store.reserve(n);
+        for (int i = 1; i <= n; ++i) {
+            lua_rawgeti(L, 3, i);
+            store.emplace_back(luaL_checkstring(L, -1));
+            lua_pop(L, 1);
+        }
+        std::vector<const char *> names;
+        names.reserve(n);
+        for (auto &s: store) names.push_back(s.c_str());
+        push_handle(L, type ? patchlib_type_get_method_by_param_names(type, name, n, names.data()) : nullptr);
+        return 1;
+    }
+
+    /// mod.patch.field_pointer(field, instance) -> lightuserdata | nil
+    /// 仅 Android 暴露（原生字段真实指针）；桌面端返回 nil
+    static int l_patch_field_pointer(lua_State *L) {
+#if defined(__ANDROID__)
+        void *p = patchlib_field_get_pointer(to_handle(L, 1), to_handle(L, 2));
+        if (p) lua_pushlightuserdata(L, p); else lua_pushnil(L);
+#else
+        (void) L;
+        lua_pushnil(L);
+#endif
+        return 1;
+    }
+
+    /// mod.patch.field_size(field) -> int（不可用时返回 0）
+    static int l_patch_field_size(lua_State *L) {
+        const patch_handle_t f = to_handle(L, 1);
+        if (!f || !patchlib_field_get_size) {
+            lua_pushinteger(L, 0);
+            return 1;
+        }
+        lua_pushinteger(L, static_cast<lua_Integer>(patchlib_field_get_size(f)));
+        return 1;
+    }
+
+    /// mod.patch.mem_read(ptr, offset, size) -> string | nil
+    static int l_patch_mem_read(lua_State *L) {
+        const void *base = lua_touserdata(L, 1);
+        if (!base) {
+            lua_pushnil(L);
+            return 1;
+        }
+        const long offset = static_cast<long>(luaL_checkinteger(L, 2));
+        const size_t size = static_cast<size_t>(luaL_checkinteger(L, 3));
+        if (size == 0 || size > 4096) return luaL_error(L, "bad size (1..4096)");
+        lua_pushlstring(L, static_cast<const char *>(base) + offset, size);
+        return 1;
+    }
+
+    /// mod.patch.mem_write(ptr, offset, bytes) -> true
+    static int l_patch_mem_write(lua_State *L) {
+        void *base = lua_touserdata(L, 1);
+        if (!base) return luaL_error(L, "invalid pointer");
+        const long offset = static_cast<long>(luaL_checkinteger(L, 2));
+        size_t len = 0;
+        const char *data = luaL_checklstring(L, 3, &len);
+        if (len == 0 || len > 4096) return luaL_error(L, "bad size (1..4096)");
+        std::memcpy(static_cast<char *>(base) + offset, data, len);
+        lua_pushboolean(L, true);
+        return 1;
+    }
+
+    /// 基础标量/指针类型的字节大小（不依赖内核符号）
+    static size_t patch_scalar_size(const patch_type_t type) {
+        switch (type) {
+            case PATCH_BOOL:
+            case PATCH_INT8:
+            case PATCH_UINT8:
+            case PATCH_CHAR:   return 1;
+            case PATCH_INT16:
+            case PATCH_UINT16: return 2;
+            case PATCH_INT32:
+            case PATCH_UINT32:
+            case PATCH_FLOAT:  return 4;
+            case PATCH_INT64:
+            case PATCH_UINT64:
+            case PATCH_DOUBLE:
+            case PATCH_POINTER:
+            case PATCH_OBJECT: return 8;
+            default:           return 0;
+        }
+    }
+
+    /// mod.patch.ptr_add(ptr, byte_offset) -> lightuserdata | nil
+    static int l_patch_ptr_add(lua_State *L) {
+        void *base = lua_touserdata(L, 1);
+        if (!base) {
+            lua_pushnil(L);
+            return 1;
+        }
+        const long offset = static_cast<long>(luaL_checkinteger(L, 2));
+        lua_pushlightuserdata(L, static_cast<char *>(base) + offset);
+        return 1;
+    }
+
+    /// mod.patch.ptr_deref(ptr, byte_offset) -> lightuserdata | nil（读取该处的指针值）
+    static int l_patch_ptr_deref(lua_State *L) {
+        void *base = lua_touserdata(L, 1);
+        if (!base) {
+            lua_pushnil(L);
+            return 1;
+        }
+        const long offset = static_cast<long>(luaL_checkinteger(L, 2));
+        void *p = *reinterpret_cast<void **>(static_cast<char *>(base) + offset);
+        if (p) lua_pushlightuserdata(L, p);
+        else lua_pushnil(L);
+        return 1;
+    }
+
+    /// mod.patch.mem_read_values(ptr, byte_offset, count, type) -> table
+    /// 一次跨边界批量读取连续的同类型值（C 快通道的核心）
+    static int l_patch_mem_read_values(lua_State *L) {
+        const void *base = lua_touserdata(L, 1);
+        if (!base) {
+            lua_newtable(L);
+            return 1;
+        }
+        const long offset = static_cast<long>(luaL_checkinteger(L, 2));
+        const size_t count = static_cast<size_t>(luaL_checkinteger(L, 3));
+        const char *tn = luaL_checkstring(L, 4);
+        patch_type_t type;
+        if (!type_from_name(tn, &type)) return luaL_error(L, "unknown type name: %s", tn);
+        const size_t esz = patch_scalar_size(type);
+        if (esz == 0) return luaL_error(L, "unsupported type for bulk read: %s", tn);
+        if (count > (1u << 20)) return luaL_error(L, "count too large (max 1048576)");
+
+        const char *p = static_cast<const char *>(base) + offset;
+        lua_createtable(L, static_cast<int>(count), 0);
+        for (size_t i = 0; i < count; ++i) {
+            push_patch_value(L, type, p + i * esz);
+            lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+        }
+        return 1;
+    }
+
+    /// mod.patch.mem_write_values(ptr, byte_offset, table, type) -> count
+    static int l_patch_mem_write_values(lua_State *L) {
+        void *base = lua_touserdata(L, 1);
+        if (!base) return luaL_error(L, "invalid pointer");
+        const long offset = static_cast<long>(luaL_checkinteger(L, 2));
+        luaL_checktype(L, 3, LUA_TTABLE);
+        const char *tn = luaL_checkstring(L, 4);
+        patch_type_t type;
+        if (!type_from_name(tn, &type)) return luaL_error(L, "unknown type name: %s", tn);
+        const size_t esz = patch_scalar_size(type);
+        if (esz == 0) return luaL_error(L, "unsupported type for bulk write: %s", tn);
+        const size_t count = static_cast<size_t>(luaL_len(L, 3));
+        if (count > (1u << 20)) return luaL_error(L, "count too large (max 1048576)");
+
+        char *p = static_cast<char *>(base) + offset;
+        for (size_t i = 0; i < count; ++i) {
+            lua_rawgeti(L, 3, static_cast<lua_Integer>(i + 1));
+            read_patch_value(L, -1, type, p + i * esz);
+            lua_pop(L, 1);
+        }
+        lua_pushinteger(L, static_cast<lua_Integer>(count));
+        return 1;
+    }
+
+    // ========================================================================
     // Patchlib: 钩子（Prefix / Postfix）
     // ========================================================================
 
@@ -886,6 +1190,7 @@ namespace lualoader::lua_api {
         int prefix_ref{LUA_NOREF};
         int postfix_ref{LUA_NOREF};
         bool copy_handles{false}; ///< true 时把 instance/对象参数/返回值复制为 GC 托管句柄
+        bool override_result{false}; ///< true 时允许 postfix 返回值覆盖原方法返回值（默认关闭，保证兼容）
         patch_hook_id_t hook_id{PATCH_HOOK_INVALID_ID};
     };
 
@@ -902,34 +1207,33 @@ namespace lualoader::lua_api {
     static void hook_postfix_dispatch(int slot, patch_handle_t instance, void **args, void *result,
                                       const patch_method_signature_t *sig);
 
-#define LUALOADER_FOR_EACH_TRAMPOLINE(M)                 \
-    M(0) M(1) M(2) M(3) M(4) M(5) M(6) M(7)             \
-    M(8) M(9) M(10) M(11) M(12) M(13) M(14) M(15)       \
-    M(16) M(17) M(18) M(19) M(20) M(21) M(22) M(23)     \
-    M(24) M(25) M(26) M(27) M(28) M(29) M(30) M(31)
-
-#define LUALOADER_DEFINE_TRAMPOLINE(N)                                                                          \
-    static bool prefix_trampoline_##N(patch_handle_t instance, void **args,                                     \
-                                      const patch_method_signature_t *sig, void *result) {                      \
-        return hook_prefix_dispatch(N, instance, args, sig, result);                                            \
-    }                                                                                                           \
-    static void postfix_trampoline_##N(patch_handle_t instance, void **args, void *result,                      \
-                                       const patch_method_signature_t *sig) {                                   \
-        hook_postfix_dispatch(N, instance, args, result, sig);                                                  \
+    /// 跳板：按槽位号生成固定签名的 C 入口（用模板展开，数量随 MAX_HOOK_SLOTS 走）
+    template<int N>
+    static bool prefix_trampoline(patch_handle_t instance, void **args,
+                                  const patch_method_signature_t *sig, void *result) {
+        return hook_prefix_dispatch(N, instance, args, sig, result);
     }
 
-    LUALOADER_FOR_EACH_TRAMPOLINE(LUALOADER_DEFINE_TRAMPOLINE)
+    template<int N>
+    static void postfix_trampoline(patch_handle_t instance, void **args, void *result,
+                                   const patch_method_signature_t *sig) {
+        hook_postfix_dispatch(N, instance, args, result, sig);
+    }
 
-#define LUALOADER_PREFIX_PTR(N) prefix_trampoline_##N,
-#define LUALOADER_POSTFIX_PTR(N) postfix_trampoline_##N,
+    template<int... Is>
+    static std::array<prefix_callback_t, sizeof...(Is)> make_prefix_table(std::integer_sequence<int, Is...>) {
+        return {&prefix_trampoline<Is>...};
+    }
 
-    static prefix_callback_t g_prefix_table[] = {LUALOADER_FOR_EACH_TRAMPOLINE(LUALOADER_PREFIX_PTR)};
-    static postfix_callback_t g_postfix_table[] = {LUALOADER_FOR_EACH_TRAMPOLINE(LUALOADER_POSTFIX_PTR)};
+    template<int... Is>
+    static std::array<postfix_callback_t, sizeof...(Is)> make_postfix_table(std::integer_sequence<int, Is...>) {
+        return {&postfix_trampoline<Is>...};
+    }
 
-#undef LUALOADER_PREFIX_PTR
-#undef LUALOADER_POSTFIX_PTR
-#undef LUALOADER_DEFINE_TRAMPOLINE
-#undef LUALOADER_FOR_EACH_TRAMPOLINE
+    static const std::array<prefix_callback_t, MAX_HOOK_SLOTS> g_prefix_table =
+            make_prefix_table(std::make_integer_sequence<int, MAX_HOOK_SLOTS>{});
+    static const std::array<postfix_callback_t, MAX_HOOK_SLOTS> g_postfix_table =
+            make_postfix_table(std::make_integer_sequence<int, MAX_HOOK_SLOTS>{});
 
     /// 压入一个参数值；copy_handles 时把对象/指针句柄复制为 GC 托管句柄
     static void push_hook_arg_value(lua_State *L, const patch_type_t type, const void *value, const bool copy_handles) {
@@ -1008,7 +1312,16 @@ namespace lualoader::lua_api {
             lua_pushnil(L);
         }
 
-        pcall_log(L, 3, 0, "postfix hook");
+        // 默认忽略 postfix 返回值（兼容旧 Mod）；仅在 opt-in 时用返回值覆盖原方法返回值
+        if (s.override_result) {
+            if (pcall_log(L, 3, 1, "postfix hook") == LUA_OK) {
+                if (result && sig && sig->return_type != PATCH_VOID && !lua_isnil(L, -1)) {
+                    read_patch_value(L, -1, sig->return_type, result);
+                }
+            }
+        } else {
+            pcall_log(L, 3, 0, "postfix hook");
+        }
         lua_settop(L, base);
     }
 
@@ -1075,6 +1388,15 @@ namespace lualoader::lua_api {
         s.copy_handles = lua_toboolean(L, -1) != 0;
         lua_pop(L, 1);
 
+        // 显式 opt-in 才允许 postfix 返回值覆盖原方法返回值（默认关闭，保证旧 Mod 兼容）
+        lua_getfield(L, 2, "override_result");
+        if (lua_isnil(L, -1)) {
+            lua_pop(L, 1);
+            lua_getfield(L, 2, "result");
+        }
+        s.override_result = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+
         if (s.prefix_ref == LUA_NOREF && s.postfix_ref == LUA_NOREF) {
             s = HookSlot{};
             return luaL_error(L, "hook must define a 'prefix' and/or 'postfix' function");
@@ -1128,6 +1450,22 @@ namespace lualoader::lua_api {
             {"set_field_raw", l_patch_field_set_raw},
             {"array_length", l_patch_array_length},
             {"array_at", l_patch_array_at},
+            {"array_set", l_patch_array_set},
+            {"array_fill", l_patch_array_fill},
+            {"array_create", l_patch_array_create},
+            {"array_at_raw", l_patch_array_at_raw},
+            {"array_set_raw", l_patch_array_set_raw},
+            {"property_get_method", l_patch_property_get_method},
+            {"property_set_method", l_patch_property_set_method},
+            {"get_method_by_names", l_patch_get_method_by_names},
+            {"field_pointer", l_patch_field_pointer},
+            {"field_size", l_patch_field_size},
+            {"mem_read", l_patch_mem_read},
+            {"mem_write", l_patch_mem_write},
+            {"ptr_add", l_patch_ptr_add},
+            {"ptr_deref", l_patch_ptr_deref},
+            {"mem_read_values", l_patch_mem_read_values},
+            {"mem_write_values", l_patch_mem_write_values},
             {"string_create", l_patch_string_create},
             {"string_value", l_patch_string_value},
             {"string_empty", l_patch_string_empty},

@@ -147,6 +147,8 @@ local method2 = mod.patch.get_method(player, "Foo")             -- 单参时可�
 | 函数 | 说明 |
 |---|---|
 | `get_basic_type(name)` | 基础类型，如 `"int32"` / `"float"` / `"object"` |
+| `get_method_by_names(type, name, {names...})` | 按参数名精确选重载（避免选错同名同参个数的方法） |
+| `property_get_method(prop)` / `property_set_method(prop)` | 从属性句柄取 getter / setter 方法句柄 |
 | `type_name(handle)` | 类型名 |
 | `get_parent(type)` | 父类型 |
 | `is_valid(handle)` | 句柄是否有效 |
@@ -192,6 +194,79 @@ local num = mod.patch.array_at(array, i, "float")     -- 值类型数组需给�
 local arr = mod.patch.get_field_value(mod.patch.get_field(Main, "npc"), nil, "object")
 ```
 
+写入 / 创建 / 批量：
+
+```lua
+mod.patch.array_set(array, i, value[, type])   -- 写元素，成功返回 true
+mod.patch.array_fill(array, value[, type])     -- 填充所有元素
+mod.patch.array_create(size, elem_type)        -- 新建托管数组，elem_type 为类型句柄或类型名
+```
+
+- `array_set` 的 `type` 省略时按 Lua 值推断（`bool` / 整数→`int32` / 浮点→`float` /
+  字符串→托管 string / lightuserdata→`object`）；**值类型数组建议显式给类型**（如 `"float"`、`"int32"`）；
+- 内联结构体数组 / 需要按原始字节读写的场景：
+
+```lua
+local raw = mod.patch.array_at_raw(array, i, size)  -- 返回原始字节串
+mod.patch.array_set_raw(array, i, raw)              -- 按字节写回
+```
+
+### 属性桥接
+
+`get_property` 返回的属性句柄本身不可调用，需先取访问器：
+
+```lua
+local prop   = mod.patch.get_property(type, "SomeProp")
+local getter = mod.patch.property_get_method(prop)
+local setter = mod.patch.property_set_method(prop)
+local v = mod.patch.invoke(getter, instance)        -- 读
+mod.patch.invoke(setter, instance, newValue, "int32") -- 写
+```
+
+### C 快通道（内存 / 指针，Android）
+
+一套**通用的内存/指针原语**，把“逐元素跨 C 边界（甚至逐个托管 invoke）”压成“批量一次读”。
+凡数据在**平坦内存布局**里都能用，**不限于世界 Tile**：
+
+- 原生指针数组（`static T*`，如 `TileData.TileLookup/TileType/TileFrameX` …）；
+- 内联结构体数组（如 `Recipe.requiredItemQuickLookup`、`Projectile.ai`）；
+- 成批对象指针（如 `Main.npc / Main.projectile`，一次读一批句柄）；
+- 任意“基址 + 连续布局”的缓冲（纹理像素、自定义二进制数据等）。
+
+```lua
+local ptr = mod.patch.field_pointer(field, instance)  -- 仅 Android 返回真实指针，桌面端为 nil
+local raw = mod.patch.mem_read(ptr, offset, size)     -- 读原始字节
+mod.patch.mem_write(ptr, offset, raw)                 -- 写原始字节
+
+mod.patch.ptr_add(ptr, byte_offset)                        -- 指针偏移 -> lightuserdata
+mod.patch.ptr_deref(ptr, byte_offset)                      -- 读取指针值（指针链）-> lightuserdata
+mod.patch.mem_read_values(ptr, byte_offset, count, type)   -- 批量读 -> 值表（一次跨边界）
+mod.patch.mem_write_values(ptr, byte_offset, table, type)  -- 批量写 -> count
+mod.patch.field_size(field)                                -- 字段字节大小（不可用返回 0）
+```
+
+**示例：世界 Tile 快通道**（Tile 只是上面的一个场景；Android 上 `TileData` 是裸数组）
+
+```lua
+-- 只做一次：拿到静态字段「存储地址」，之后双重解引用（换世界时指针会变）
+local p_lookup = mod.patch.field_pointer(mod.patch.get_field(TileData, "TileLookup"), nil) -- uint**
+local p_type   = mod.patch.field_pointer(mod.patch.get_field(TileData, "TileType"),   nil) -- ushort*
+
+-- 读一个坐标：GetTileType(x,y) = TileType[TileLookup[y*maxX+x]]
+local lookup = mod.patch.ptr_deref(p_lookup, 0)            -- uint*  基址
+local types  = mod.patch.ptr_deref(p_type,   0)            -- ushort* 基址
+local idx = mod.patch.mem_read_values(lookup, (y*maxX+x)*4, 1, "uint32")[1]
+if idx ~= 0xFFFFFFFF then
+    local t = mod.patch.mem_read_values(types, idx*2, 1, "uint16")[1]
+end
+
+-- 批量读一段（一次跨边界）：
+local idxs = mod.patch.mem_read_values(lookup, startByte, count, "uint32")
+```
+
+> 桌面端 `field_pointer` 返回 `nil`，Mod 应自动退回托管路径（`array_at` / `Framing.GetTileSafely` 等），
+> 从而保持**一份脚本全平台**。裸指针偏移写错会崩游戏，请自行做好边界检查。
+
 ### 托管字符串
 
 `System.String` 可以当 Lua 字符串读写，把类型写成 `"string"`：
@@ -235,18 +310,22 @@ local r = mod.patch.invoke(method, [instance,] ...)
 local hook = mod.patch.install_hook(method, {
     -- 原方法执行前：返回 true 表示跳过原方法（可选再返回一个值作为返回值）
     prefix = function(instance, args, result) return false end,
-    -- 原方法执行后：result 是原方法的返回值
+    -- 原方法执行后：result 是原方法的返回值；默认忽略返回值
     postfix = function(instance, args, result) end,
+    -- 需要 postfix 覆盖返回值时显式开启（默认关闭，保证兼容）：
+    -- override_result = true,
 })
 
 hook:remove()   -- 手动卸载
 ```
 
 - `args` 是 1 起始的参数数组；`instance` 是对象实例（静态方法为 `nil`）。
-- `prefix` / `postfix` 至少写一个；最多 32 个钩子。
+- `prefix` / `postfix` 至少写一个；最多 **1024** 个钩子（全加载器共享，释放后可复用）。
 - 钩子装上后一直有效，直到 `hook:remove()` 或 Mod 卸载（丢弃返回值不会导致失效）。
 - `{ copy = true }`：把 `instance`、对象参数、对象返回值包成 **GC 托管副本**，可安全跨帧缓存
   （见下）。默认不开，行为与不加时完全一致。
+- `{ override_result = true }`（或 `result = true`）：允许 `postfix` 的返回值**覆盖原方法返回值**
+  （类型需与签名匹配，返回 `nil` 表示不修改）。默认关闭。
 
 ### 句柄与生命周期
 

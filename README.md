@@ -145,6 +145,8 @@ todo_list_android = { "android_setup" }        -- 只在 Android 执行
 - `mod.patch.get_type(ns, name)`：按命名空间+类名取类型，如 `get_type("Terraria", "Player")`
 - `mod.patch.get_field(type, name)` / `mod.patch.get_property(type, name)`
 - `mod.patch.get_method(type, name[, argc])`
+- `mod.patch.get_method_by_names(type, name, {参数名...})`：按参数名精确选重载，避免选错
+- `mod.patch.property_get_method(prop)` / `mod.patch.property_set_method(prop)`：取属性访问器
 - `mod.patch.new_instance(type)` / `mod.patch.get_parent(type)` / `mod.patch.type_name(type)`
 - `mod.patch.get_basic_type(name)`：`"int32"`/`"float"`/`"bool"`/`"object"` 等
 - `mod.patch.free(handle)`
@@ -223,10 +225,34 @@ mod.patch.set_field_raw(field, instance, raw)
 local n = mod.patch.array_length(array)
 local obj = mod.patch.array_at(array, i)               -- 省略类型时按对象(指针)处理
 local num = mod.patch.array_at(array, i, "float")      -- 值类型数组需给类型名
+
+-- 写数组 / 新建数组
+mod.patch.array_set(array, i, value[, type])           -- 写元素
+mod.patch.array_fill(array, value[, type])             -- 填充
+mod.patch.array_create(size, elem_type)                -- 新建托管数组
+local raw = mod.patch.array_at_raw(array, i, size)     -- 原始字节读
+mod.patch.array_set_raw(array, i, raw)                 -- 原始字节写
 ```
 
 对象数组的句柄可通过静态字段取得，例如
 `mod.patch.get_field_value(mod.patch.get_field(main, "projectile"), nil, "object")`。
+
+C 快通道（内存 / 指针，Android）：把“逐元素跨边界”压成“批量一次读”，可用于**任何平坦内存布局**，
+不只是世界 Tile——原生指针数组、内联结构体数组、成批对象指针、纹理缓冲等都能用。
+
+```lua
+local ptr = mod.patch.field_pointer(field, instance)   -- 仅 Android 返回真实指针，桌面端 nil
+local raw = mod.patch.mem_read(ptr, offset, size)      -- 原始字节读写
+mod.patch.mem_write(ptr, offset, raw)
+mod.patch.ptr_add(ptr, byte_offset)                    -- 指针偏移
+mod.patch.ptr_deref(ptr, byte_offset)                  -- 读取指针值（指针链）
+mod.patch.mem_read_values(ptr, byte_offset, count, type)   -- 批量读 -> 表
+mod.patch.mem_write_values(ptr, byte_offset, table, type)  -- 批量写
+mod.patch.field_size(field)                            -- 字段字节大小（不可用返回 0）
+```
+
+> 桌面端 `field_pointer` 返回 `nil`，Mod 自动退回托管路径（`array_at` / `Framing.GetTileSafely` 等），
+> 从而保持**一份脚本全平台**。具体用法与示例见 [`doc/api.md`](doc/api.md)。
 
 调用方法：
 
@@ -235,6 +261,18 @@ mod.patch.invoke(method, [instance, ] ...)
 ```
 
 方法返回对象(引用类型)时得到 userdata，没有结果时得到 `nil`。
+
+钩子 `postfix` **默认忽略返回值**（与旧版一致，保证兼容）。若需要它覆盖原方法返回值，
+安装时加 `override_result = true`（或 `result = true`）：
+
+```lua
+mod.patch.install_hook(method, {
+    override_result = true,
+    postfix = function(instance, args, result)
+        return 999   -- 覆盖返回值（类型需与签名匹配；返回 nil 表示不修改）
+    end,
+})
+```
 
 装钩子：
 
@@ -249,7 +287,7 @@ hook:remove()   -- 手动卸载
 ```
 
 - `prefix` / `postfix` 至少写一个；
-- 最多 32 个钩子，钩子装上后一直有效，直到 `hook:remove()` 或 Mod 卸载（丢弃返回值不会导致失效）。
+- 最多 **1024** 个钩子（全加载器共享，`remove()`/卸载后释放可复用），钩子装上后一直有效，直到 `hook:remove()` 或 Mod 卸载（丢弃返回值不会导致失效）。
 
 ## 示范 Mod
 

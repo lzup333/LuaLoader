@@ -131,6 +131,8 @@ Types/fields/methods:
 - `mod.patch.get_type(ns, name)` — e.g. `get_type("Terraria", "Player")`
 - `mod.patch.get_field(type, name)` / `mod.patch.get_property(type, name)`
 - `mod.patch.get_method(type, name[, argc])`
+- `mod.patch.get_method_by_names(type, name, {param_names...})` — pick an overload by parameter names
+- `mod.patch.property_get_method(prop)` / `mod.patch.property_set_method(prop)` — property accessors
 - `mod.patch.new_instance(type)` / `mod.patch.get_parent(type)` / `mod.patch.type_name(type)`
 - `mod.patch.get_basic_type(name)` — `"int32"`/`"float"`/`"bool"`/`"object"` ...
 - `mod.patch.free(handle)`
@@ -161,10 +163,35 @@ mod.patch.set_field_raw(field, instance, raw)
 local n = mod.patch.array_length(array)
 local obj = mod.patch.array_at(array, i)               -- omitted type = object (pointer)
 local num = mod.patch.array_at(array, i, "float")      -- value arrays need a type name
+
+-- Write / create arrays
+mod.patch.array_set(array, i, value[, type])
+mod.patch.array_fill(array, value[, type])
+mod.patch.array_create(size, elem_type)
+local raw = mod.patch.array_at_raw(array, i, size)     -- raw bytes
+mod.patch.array_set_raw(array, i, raw)
 ```
 
 You can get an object array handle from a static field, e.g.
 `mod.patch.get_field_value(mod.patch.get_field(main, "projectile"), nil, "object")`.
+
+C fast channel (memory / pointers, Android): collapse "one C-boundary crossing per element" into a
+single bulk read. Works for **any flat memory layout**, not just world tiles — raw pointer arrays,
+inline struct arrays, batches of object pointers, texture buffers, etc.
+
+```lua
+local ptr = mod.patch.field_pointer(field, instance)   -- Android only, nil on desktop
+local raw = mod.patch.mem_read(ptr, offset, size)      -- raw bytes
+mod.patch.mem_write(ptr, offset, raw)
+mod.patch.ptr_add(ptr, byte_offset)                    -- pointer offset
+mod.patch.ptr_deref(ptr, byte_offset)                  -- read pointer value (pointer chains)
+mod.patch.mem_read_values(ptr, byte_offset, count, type)   -- bulk read -> table
+mod.patch.mem_write_values(ptr, byte_offset, table, type)  -- bulk write -> count
+mod.patch.field_size(field)                            -- 0 if unavailable
+```
+
+> On desktop `field_pointer` returns `nil`; mods fall back to the managed path (`array_at` /
+> `Framing.GetTileSafely` ...), keeping a single cross-platform script. See `doc/api.md` for a worked example.
 
 Methods: `mod.patch.invoke(method, [instance, ] ...)`. A reference return value comes back as
 userdata; no result comes back as `nil`.
@@ -175,13 +202,14 @@ Hooks:
 local hook = mod.patch.install_hook(method, {
     -- before the original: return true to skip it (and optionally return a replacement value)
     prefix = function(instance, args, result) return false end,
-    -- after the original: result is its return value
-    postfix = function(instance, args, result) end,
+    -- after the original: return value is ignored by default; opt in with override_result = true
+    postfix = function(instance, args, result) return nil end,
+    -- override_result = true,
 })
 hook:remove()   -- remove manually
 ```
 
-At least one of `prefix`/`postfix` is required. Up to 32 hooks per loader. A hook stays active until
+At least one of `prefix`/`postfix` is required. Up to **1024** hooks per loader (shared, slots are freed and reused on remove/unload). A hook stays active until
 `hook:remove()` or mod unload — dropping the returned value does **not** remove it.
 
 ## Demo
