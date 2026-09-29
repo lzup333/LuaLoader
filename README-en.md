@@ -184,23 +184,6 @@ hook:remove()   -- remove manually
 At least one of `prefix`/`postfix` is required. Up to 32 hooks per loader. A hook stays active until
 `hook:remove()` or mod unload — dropping the returned value does **not** remove it.
 
-## GUI
-
-On PE (mobile, Unity), if a script defines `mod.on_gui`, the loader calls it every frame during Unity's
-`OnGUI` phase; inside it you describe the UI with `mod.gui.*` (immediate mode, backed by `GUILayout`):
-
-```lua
-function mod.on_gui()
-    mod.gui.label("hello")
-    if mod.gui.button("click") then
-        mod.info("clicked")
-    end
-end
-```
-
-Available: `label / box / button / toggle / slider / space / begin|end_horizontal / begin|end_vertical`.
-Only callable inside `on_gui`; PE-only for now (PC has no Unity GUI, so it won't hook). See `doc/api.md`.
-
 ## Demo
 
 `LuaManaLock/` in this project is a complete demo (mana lock). More mods (e.g. `LuaHealthLock`, a

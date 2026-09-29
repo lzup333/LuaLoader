@@ -251,23 +251,6 @@ hook:remove()   -- 手动卸载
 - `prefix` / `postfix` 至少写一个；
 - 最多 32 个钩子，钩子装上后一直有效，直到 `hook:remove()` 或 Mod 卸载（丢弃返回值不会导致失效）。
 
-## 图形界面（GUI）
-
-在 PE（手机端，Unity）上，脚本定义 `mod.on_gui` 后，加载器会每帧在 Unity 的 `OnGUI` 阶段调用它，
-里面用 `mod.gui.*` 画界面（即时模式，底层是 Unity 的 `GUILayout`）：
-
-```lua
-function mod.on_gui()
-    mod.gui.label("你好")
-    if mod.gui.button("点我") then
-        mod.info("clicked")
-    end
-end
-```
-
-支持 `label / box / button / toggle / slider / space / begin|end_horizontal / begin|end_vertical`。
-只能在 `on_gui` 里调用；目前仅 PE 有效（PC 上没有 Unity GUI，不会挂载）。详见 `doc/api.md`。
-
 ## 示范 Mod
 
 项目里的 `LuaManaLock/` 是一个完整示范（魔力锁定）。更多 Mod（例如锁血的 `LuaHealthLock`）

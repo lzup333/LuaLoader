@@ -302,9 +302,6 @@ namespace lualoader::lua_engine {
         run_todo_list(L, platform_arch_list.c_str());
 
         protected_call(L, handle->init_ref, "mod.init");
-
-        // 若脚本定义了 mod.on_gui，挂到 XNAUnityRunner.OnGUI 上（每帧绘制）
-        lua_api::install_gui_hook(handle);
     }
 
     void call_cleanup(lua_mod_handle_t *handle) {
