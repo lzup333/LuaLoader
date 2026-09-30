@@ -641,10 +641,10 @@ namespace lualoader::gui {
             glViewport(0, 0, w, h);
 #endif
 
-            // 每个 Mod 一个窗口，调用其 mod.on_gui
+            // 每个定义了 mod.on_gui 的 Mod 一个窗口
             for (auto &kv: lualoader::core::lua_mod_handles) {
                 auto *h = kv.second;
-                if (!h) continue;
+                if (!h || h->gui_ref == LUA_NOREF) continue; // 没有 on_gui 的 Mod 不开窗
                 ImGui::SetNextWindowSize(ImVec2(360 * g_ui_scale, 260 * g_ui_scale), ImGuiCond_FirstUseEver);
                 const bool open = ImGui::Begin(h->mod_id.c_str());
                 if (open) lualoader::lua_engine::call_on_gui(h);
