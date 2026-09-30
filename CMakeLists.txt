@@ -32,6 +32,8 @@ set(LUALOADER_SOURCES
         src/logger.cpp
         src/lua_engine.cpp
         src/lua_api.cpp
+        src/lua_item.cpp
+        src/lua_recipe.cpp
         includes/tefkernel/tef_api_imp.c
 )
 if (LUALOADER_GUI)
@@ -43,6 +45,8 @@ add_library(LuaLoader SHARED ${LUALOADER_SOURCES})
 target_include_directories(LuaLoader
         PUBLIC
         includes
+        PRIVATE
+        lib/stb
 )
 
 target_link_libraries(LuaLoader

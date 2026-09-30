@@ -19,6 +19,7 @@
 
 #include "lua_engine.hpp"
 #include "lua_api.hpp"
+#include "lua_item.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -259,11 +260,30 @@ namespace lualoader::lua_engine {
                 break;
             }
         }
-        if (entry_path.empty()) {
-            err = "entry script not found: " + (std::filesystem::path(private_dir) / "lib" / handle->entry).string();
+        // 是否只提供数据驱动物品（lib/item/*.json）而没有入口脚本
+        const auto has_json_items = [](const std::filesystem::path &dir) {
+            std::error_code ec;
+            if (!std::filesystem::is_directory(dir, ec)) return false;
+            for (const auto &e: std::filesystem::directory_iterator(dir, ec)) {
+                if (e.is_regular_file() && e.path().extension() == ".json") return true;
+            }
             return false;
+        };
+        const bool has_items =
+                has_json_items(std::filesystem::path(private_dir) / "lib" / "item") ||
+                has_json_items(std::filesystem::path(config_dir) / "Resources" / "lib" / "item") ||
+                has_json_items(std::filesystem::path(private_dir) / "item");
+
+        if (entry_path.empty()) {
+            if (!has_items) {
+                err = "entry script not found: " +
+                      (std::filesystem::path(private_dir) / "lib" / handle->entry).string();
+                return false;
+            }
+            handle->mod_dir = (std::filesystem::path(private_dir) / "lib").string();
+        } else {
+            handle->mod_dir = std::filesystem::path(entry_path).parent_path().string();
         }
-        handle->mod_dir = std::filesystem::path(entry_path).parent_path().string();
 
         lua_State *L = luaL_newstate();
         if (!L) {
@@ -276,18 +296,25 @@ namespace lualoader::lua_engine {
         configure_package(L, handle->mod_dir);
         lua_api::register_api(L, handle);
 
-        LOG_INFO("Running Lua entry: {}", entry_path);
-        if (!run_file(L, entry_path, err)) {
-            LOG_ERROR("Failed to run Lua mod {}: {}", handle->mod_id, err);
-            lua_close(L);
-            handle->L = nullptr;
-            return false;
+        if (!entry_path.empty()) {
+            LOG_INFO("Running Lua entry: {}", entry_path);
+            if (!run_file(L, entry_path, err)) {
+                LOG_ERROR("Failed to run Lua mod {}: {}", handle->mod_id, err);
+                lua_close(L);
+                handle->L = nullptr;
+                return false;
+            }
+        } else {
+            LOG_INFO("Mod {} 无入口脚本，仅加载数据驱动物品(lib/item)", handle->mod_id);
         }
 
         read_info(L, handle);
         handle->init_ref = ref_global_field(L, "init");
         handle->cleanup_ref = ref_global_field(L, "cleanup");
         handle->gui_ref = ref_global_field(L, "on_gui");
+
+        // 扫描 lib/item/*.json 注册数据驱动物品
+        lua_item::load_items(handle);
         return true;
     }
 

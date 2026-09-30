@@ -50,4 +50,6 @@
 #include "tefplugin/tpf_core.h"
 #include "terraria/main.h"
 #include "terraria/asset.h"
+#include "terraria/item_manager.h"
+#include "terraria/recipe_manager.h"
 #include "terraria/texture2d.h"

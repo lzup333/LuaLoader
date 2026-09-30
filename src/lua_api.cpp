@@ -36,6 +36,7 @@ extern "C" {
 }
 
 #include "logger.hpp"
+#include "lua_recipe.hpp"
 #ifdef LUALOADER_GUI
 #include "gui.hpp"
 #endif
@@ -47,6 +48,7 @@ extern "C" {
 #include "tefkernel/patchlib/struct/string.h"
 #include "tefkernel/patchlib/type.h"
 #include "tefkernel/tefstd/vector.h"
+#include "tefkernel/terraria/item_manager.h"
 
 namespace lualoader::lua_api {
 
@@ -1481,6 +1483,172 @@ namespace lualoader::lua_api {
             {nullptr, nullptr},
     };
 
+    // ========================================================================
+    // mod.item：向内核注册自定义物品
+    // ========================================================================
+
+    struct LuaItemHandle {
+        terraria_item_handle_t base; // 必须是第一个成员（回调用它反推本结构）
+        std::string modloader_id;
+        std::string mod_id;
+        std::string internal_name;
+        lua_State *L = nullptr;
+        int set_defaults_ref = LUA_NOREF;
+        int can_use_ref = LUA_NOREF;
+        int get_texture_ref = LUA_NOREF;
+    };
+
+    static void item_set_defaults_cb(terraria_item_handle_t *current,
+                                     patch_handle_t instance) {
+        auto *it = reinterpret_cast<LuaItemHandle *>(current);
+        if (!it || !it->L || it->set_defaults_ref == LUA_NOREF) return;
+        lua_State *L = it->L;
+        const int base = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, it->set_defaults_ref);
+        push_handle(L, instance);
+        pcall_log(L, 1, 0, "mod.item set_defaults");
+        lua_settop(L, base);
+    }
+
+    static bool item_can_use_cb(terraria_item_handle_t *current,
+                                patch_handle_t player_instance,
+                                patch_handle_t item_instance, bool ignore_cursed) {
+        auto *it = reinterpret_cast<LuaItemHandle *>(current);
+        if (!it || !it->L || it->can_use_ref == LUA_NOREF) return false;
+        lua_State *L = it->L;
+        const int base = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, it->can_use_ref);
+        push_handle(L, player_instance);
+        push_handle(L, item_instance);
+        lua_pushboolean(L, ignore_cursed ? 1 : 0);
+        bool ret = false;
+        if (pcall_log(L, 3, 1, "mod.item can_use") == LUA_OK) {
+            ret = lua_toboolean(L, -1) != 0;
+        }
+        lua_settop(L, base);
+        return ret;
+    }
+
+    static patch_handle_t item_get_texture_cb(terraria_item_handle_t *current) {
+        auto *it = reinterpret_cast<LuaItemHandle *>(current);
+        if (!it || !it->L || it->get_texture_ref == LUA_NOREF) return nullptr;
+        lua_State *L = it->L;
+        const int base = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, it->get_texture_ref);
+        patch_handle_t tex = nullptr;
+        if (pcall_log(L, 0, 1, "mod.item get_texture") == LUA_OK) {
+            tex = to_handle(L, -1);
+        }
+        lua_settop(L, base);
+        return tex;
+    }
+
+    static int ref_opt_function_field(lua_State *L, const int idx, const char *field) {
+        const int abs = lua_absindex(L, idx);
+        lua_getfield(L, abs, field);
+        int ref = LUA_NOREF;
+        if (lua_isfunction(L, -1)) ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        else lua_pop(L, 1);
+        return ref;
+    }
+
+    static int l_item_runtime_id(lua_State *L) {
+        auto *it = static_cast<LuaItemHandle *>(lua_touserdata(L, lua_upvalueindex(1)));
+        lua_pushinteger(L, it ? it->base.runtime_id : -1);
+        return 1;
+    }
+
+    static int l_item_register(lua_State *L) {
+        luaL_checktype(L, 1, LUA_TTABLE);
+
+        lua_getfield(L, 1, "internal_name");
+        if (!lua_isstring(L, -1)) {
+            lua_pop(L, 1);
+            return luaL_error(L, "mod.item.register: 'internal_name' (string) is required");
+        }
+        const std::string internal_name = lua_tostring(L, -1);
+        lua_pop(L, 1);
+
+        if (!terraria_item_manager_register_item)
+            return luaL_error(L, "mod.item.register: kernel item API unavailable");
+
+        auto *handle = get_handle(L);
+        auto *it = new LuaItemHandle();
+        it->L = L;
+        it->modloader_id = "lzup333.lualoader";
+        it->mod_id = handle ? handle->mod_id : "lua.mod";
+        it->internal_name = internal_name;
+
+        it->base.parent_modloader_id = it->modloader_id.c_str();
+        it->base.parent_id = it->mod_id.c_str();
+        it->base.internal_name = it->internal_name.c_str();
+        it->base.runtime_id = -1;
+
+        lua_getfield(L, 1, "has_tooltip");
+        it->base.has_tooltip = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+
+        it->set_defaults_ref = ref_opt_function_field(L, 1, "set_defaults");
+        it->can_use_ref = ref_opt_function_field(L, 1, "can_use");
+        it->get_texture_ref = ref_opt_function_field(L, 1, "get_texture");
+
+        it->base.item_ops.early_init = nullptr;
+        it->base.item_ops.init_static = nullptr;
+        it->base.item_ops.set_defaults =
+                it->set_defaults_ref != LUA_NOREF ? item_set_defaults_cb : nullptr;
+        it->base.item_ops.can_use =
+                it->can_use_ref != LUA_NOREF ? item_can_use_cb : nullptr;
+        it->base.item_ops.get_texture =
+                it->get_texture_ref != LUA_NOREF ? item_get_texture_cb : nullptr;
+
+        if (!terraria_item_manager_register_item(&it->base)) {
+            delete it;
+            return luaL_error(L, "mod.item.register: failed to register '%s'",
+                              internal_name.c_str());
+        }
+
+        LOG_INFO("[item] registered {} from mod {}", internal_name, it->mod_id);
+
+        // 返回 { internal_name = "...", runtime_id = function() }
+        lua_newtable(L);
+        lua_pushstring(L, it->internal_name.c_str());
+        lua_setfield(L, -2, "internal_name");
+        lua_pushlightuserdata(L, it);
+        lua_pushcclosure(L, l_item_runtime_id, 1);
+        lua_setfield(L, -2, "runtime_id");
+        return 1;
+    }
+
+    static int l_item_runtime_id_of(lua_State *L) {
+        const char *name = luaL_checkstring(L, 1);
+        auto *handle = get_handle(L);
+        lua_pushinteger(L, -1);
+        if (!handle || !terraria_item_manager_get_items) return 1;
+
+        tefstd_vector_t *vec = terraria_item_manager_get_items();
+        if (!vec) return 1;
+
+        const size_t n = tefstd_vector_size(vec);
+        for (size_t i = 0; i < n; ++i) {
+            auto **pp = static_cast<terraria_item_handle_t **>(tefstd_vector_at(vec, i));
+            if (!pp || !*pp) continue;
+            terraria_item_handle_t *h = *pp;
+            if (h->internal_name && h->parent_id &&
+                std::strcmp(h->internal_name, name) == 0 &&
+                std::strcmp(h->parent_id, handle->mod_id.c_str()) == 0) {
+                lua_pushinteger(L, h->runtime_id);
+                return 1;
+            }
+        }
+        return 1;
+    }
+
+    static const luaL_Reg mod_item_functions[] = {
+            {"register", l_item_register},
+            {"runtime_id", l_item_runtime_id_of},
+            {nullptr, nullptr},
+    };
+
     void register_api(lua_State *L, lua_mod_handle_t *handle) {
         lua_pushlightuserdata(L, handle);
         lua_setfield(L, LUA_REGISTRYINDEX, HANDLE_KEY);
@@ -1541,6 +1709,13 @@ namespace lualoader::lua_api {
         lua_newtable(L);
         luaL_setfuncs(L, mod_patch_functions, 0);
         lua_setfield(L, -2, "patch");
+
+        lua_newtable(L);
+        luaL_setfuncs(L, mod_item_functions, 0);
+        lua_setfield(L, -2, "item");
+
+        lualoader::lua_recipe::register_api(L, handle);
+        lua_setfield(L, -2, "recipe");
 
 #ifdef LUALOADER_GUI
         lualoader::gui::register_api(L, handle);

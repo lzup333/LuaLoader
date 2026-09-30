@@ -78,6 +78,7 @@ namespace lualoader::gui {
         EGLDisplay g_egl_display = EGL_NO_DISPLAY;
         EGLSurface g_egl_surface = EGL_NO_SURFACE;
         bool g_in_render = false; // 防重入
+        bool g_render_attached = false; // 渲染线程是否已附加到 il2cpp
 
         // 触摸输入：主线程经 patchlib 读 UnityEngine.Input.touches
         patch_handle_t g_input_touches = nullptr; // Input.get_touches -> Touch[]
@@ -679,6 +680,14 @@ namespace lualoader::gui {
                 g_egl_display = dpy;
                 g_egl_surface = surf;
                 g_gui_mouse = true; // Android 上触摸即 GUI 输入
+
+                // 把渲染线程附加到 il2cpp：mod.on_gui 里可能调用 mod.patch（il2cpp），
+                // 未附加的线程直接调用 il2cpp 会崩溃。
+                if (!g_render_attached) {
+                    patchlib_thread_attach();
+                    g_render_attached = true;
+                    LOG_INFO("[gui] 渲染线程已附加到 il2cpp");
+                }
 
                 g_in_render = true;
                 ensure_context();
