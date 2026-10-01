@@ -151,8 +151,19 @@ local method2 = mod.patch.get_method(player, "Foo")             -- 单参时可�
 | `property_get_method(prop)` / `property_set_method(prop)` | 从属性句柄取 getter / setter 方法句柄 |
 | `type_name(handle)` | 类型名 |
 | `get_parent(type)` | 父类型 |
+| `get_inner_type(parent, name)` | 嵌套类型（如 `ItemID.Sets` / `PrefixLegacy.ItemSets`，见下） |
 | `is_valid(handle)` | 句柄是否有效 |
 | `free(handle)` | 手动释放句柄（一般不用，见下） |
+
+> **嵌套类型**：像 `Terraria.ID.ItemID.Sets`、`Terraria.GameContent.Prefixes.PrefixLegacy.ItemSets`
+> 这类嵌套类，用 `get_type("Terraria.ID", "ItemID.Sets")` 在 Android 上取不到。
+> 要先取外层类型，再用 `get_inner_type`：
+>
+> ```lua
+> local item_id = mod.patch.get_type("Terraria.ID", "ItemID")
+> local sets    = mod.patch.get_inner_type(item_id, "Sets")  -- -> Terraria.ID.ItemID.Sets
+> local dep     = mod.patch.get_field(sets, "Deprecated")
+> ```
 
 ### 字段读写
 

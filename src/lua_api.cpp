@@ -431,6 +431,16 @@ namespace lualoader::lua_api {
         return 1;
     }
 
+    /// mod.patch.get_inner_type(parent, name) -> 嵌套类型句柄 | nil
+    /// 例如：内层类 ItemID.Sets / PrefixLegacy.ItemSets 只能通过它获取
+    /// （il2cpp_class_from_name(ns, "ItemID.Sets") 在 Android 上取不到）。
+    static int l_patch_get_inner_type(lua_State *L) {
+        const patch_handle_t parent = to_handle(L, 1);
+        const char *name = luaL_checkstring(L, 2);
+        push_handle(L, patchlib_type_get_inner_type(parent, name));
+        return 1;
+    }
+
     static int l_patch_type_name(lua_State *L) {
         const char *name = patchlib_type_get_name(to_handle(L, 1));
         if (name) lua_pushstring(L, name); else lua_pushnil(L);
@@ -1440,6 +1450,7 @@ namespace lualoader::lua_api {
             {"new_instance", l_patch_new_instance},
             {"construct", l_patch_construct},
             {"get_parent", l_patch_get_parent},
+            {"get_inner_type", l_patch_get_inner_type},
             {"type_name", l_patch_type_name},
             {"is_valid", l_patch_is_valid},
             {"get_field", l_patch_get_field},
