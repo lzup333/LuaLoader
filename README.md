@@ -180,6 +180,8 @@ todo_list_android = { "android_setup" }        -- 只在 Android 执行
 - `mod.patch.get_method_by_names(type, name, {参数名...})`：按参数名精确选重载，避免选错
 - `mod.patch.property_get_method(prop)` / `mod.patch.property_set_method(prop)`：取属性访问器
 - `mod.patch.new_instance(type)` / `mod.patch.get_parent(type)` / `mod.patch.type_name(type)`
+- `mod.patch.get_inner_type(parent, name)`：取嵌套类型，如 `get_inner_type(ItemID, "Sets")`
+  （`ItemID.Sets` / `PrefixLegacy.ItemSets` 这类嵌套类只能用这种方式取）
 - `mod.patch.get_basic_type(name)`：`"int32"`/`"float"`/`"bool"`/`"object"` 等
 - `mod.patch.free(handle)`
 
