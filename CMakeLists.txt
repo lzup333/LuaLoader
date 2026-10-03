@@ -32,6 +32,7 @@ set(LUALOADER_SOURCES
         src/logger.cpp
         src/lua_engine.cpp
         src/lua_api.cpp
+        src/mod_api.cpp
         includes/tefkernel/tef_api_imp.c
 )
 if (LUALOADER_GUI)

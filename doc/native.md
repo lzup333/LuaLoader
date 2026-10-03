@@ -40,66 +40,57 @@ print(nativehello.greet("world"))
 
 ## 3. 在 C 侧能拿到什么
 
-### 3.1 Lua C API
+### 3.1 推荐：通过 `ll_api_t` 注入的 API 表（全平台一致）
 
-LuaLoader 导出了 `lua_*` / `luaL_*` 符号，模块按标准写法即可：
+Android 上 loader 由内核以 `RTLD_LOCAL` 从 memfd 加载，模块的 `lua_*` 未定义符号**无法**在
+ELF 全局作用域解析。因此推荐统一走 loader 注入的 API 表（与 TEFKernel 给 C mod 传 TPF 符号表同理）：
 
 ```c
-#include <lua.h>
-#include <lauxlib.h>
+#include "lualoader_mod.h"          /* 随 LuaLoader 仓库提供 */
+
+typedef struct lua_State lua_State; /* 只为拿类型，不需要完整 lua.h */
+
+static const ll_api_t *LL = NULL;
+
+/* loader 在 dlopen 后调用这个入口注入 API 表 */
+LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }
 
 static int l_greet(lua_State *L) {
-    const char *name = luaL_optstring(L, 1, "world");
-    lua_pushfstring(L, "hello, %s", name);
+    if (!LL) return 0;
+    LL_CACHE(p_tolstring, lua_tolstring, const char *, (lua_State *, int, size_t *));
+    LL_CACHE(p_pushfstring, lua_pushfstring, const char *, (lua_State *, const char *, ...));
+    size_t n = 0;
+    const char *name = p_tolstring(L, 1, &n);
+    p_pushfstring(L, "hello, %s", name ? name : "world");
     return 1;
 }
-
-static const luaL_Reg funcs[] = { {"greet", l_greet}, {NULL, NULL} };
 
 int luaopen_nativehello(lua_State *L) {
-    luaL_newlib(L, funcs);
+    if (!LL) return 0;
+    LL_CACHE(p_createtable, lua_createtable, void, (lua_State *, int, int));
+    LL_CACHE(p_pushcfunction, lua_pushcfunction, void, (lua_State *, int (*)(lua_State *)));
+    LL_CACHE(p_setfield, lua_setfield, void, (lua_State *, int, const char *));
+    p_createtable(L, 0, 1);
+    p_pushcfunction(L, l_greet);
+    p_setfield(L, -2, "greet");
     return 1;
 }
 ```
 
-> 编译时**不要链接** Lua 库；`lua_*` 保持未定义，运行时由 loader 解析。
-> Windows 例外：PE 不允许 DLL 带未解析符号，需要链接 loader 的 import lib（见 3.3）。
+要点：
 
-### 3.2 内核 API（`patchlib_*`）
+- `ll_api_t { version, size, lookup(name) }`：`lookup` 可解析 **loader 自身导出的任意符号**
+  （`lua_*`、`luaL_*`、`patchlib_*` …），无需链接任何库
+- `LL_CACHE(变量, 符号名, 返回类型, (参数类型...))` 宏：首次调用时解析并缓存函数指针
+- 拿 `patchlib_*` 同理：`LL_CACHE(p_type_get_type, patchlib_type_get_type, void *, (const char *, const char *));`
 
-LuaLoader 同时导出了内核的 `patchlib_*` **函数指针变量**，签名与
-`includes/tefkernel/patchlib/*.h` 完全一致。把该头文件目录加入 include 路径即可直接调用：
+> 若 loader 未注入（旧版 loader），`LL` 为 NULL。模块里应 `if (!LL) return 0;` 优雅失败，不要崩溃。
 
-```c
-#include "patchlib/type.h"
-#include "patchlib/field.h"
+### 3.2 直接 `extern`（仅 Linux/桌面可用）
 
-int luaopen_mymod(lua_State *L) {
-    patch_handle_t item = patchlib_type_get_type("Terraria", "Item");
-    patch_handle_t f    = patchlib_type_get_field(item, "useTime");
-    // ... 直接使用内核能力
-    lua_pushboolean(L, f != 0);
-    return 1;
-}
-```
-
-注意：
-- 这些是**指针变量**，由内核启动时填充；内核没有的能力其值为 `NULL`，**调用前判空**
-- 正式版内核与开发版内核导出的能力集合不同（开发版更多）
-
-### 3.3 平台差异
-
-| 平台 | 编译 | 链接 |
-|---|---|---|
-| Linux / Android | `-fPIC -shared`，`lua_*` 允许未定义 | 不需要额外库 |
-| Windows (MinGW) | `-shared` | 必须链接 loader 的 import lib（PE 要求符号全部解析）：`sdk/windows_<arch>/libloader.windows.<arch>.dll.a` |
-
-Windows import lib 由 loader DLL 生成：
-
-```bash
-# 依赖 mingw-w64-tools（apt install mingw-w64-tools）
-./tools/make_win_implib.sh <libloader.windows.x64.dll> sdk/windows_x64
-```
+在 Linux/桌面，loader 以 `RTLD_GLOBAL` 预加载原生库，模块可直接引用 loader 导出的符号
+（`lua_*` 与 `patchlib_*` 函数指针变量，签名同 `includes/tefkernel/patchlib/*.h`）。
+但 **Android 不可用**（符号作用域封闭），所以跨平台模块请用 3.1。
 
 ## 4. 完整示例
 

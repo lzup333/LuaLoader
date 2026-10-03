@@ -19,7 +19,10 @@
 
 #include "lua_engine.hpp"
 #include "lua_api.hpp"
+#include "mod_api.hpp"
+#include "lualoader_mod.h"
 
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -64,13 +67,87 @@ namespace lualoader::lua_engine {
                                                 const std::string &platform,
                                                 const std::string &arch);
 
+#if defined(__ANDROID__)
+    /// 当前进程（游戏）的应用私有目录：/data/data/<pkg>/files
+    /// Android 的 linker 命名空间只允许 /data、/mnt/expand，/storage 下的 .so 无法 dlopen，
+    /// 因此需要把原生库复制到这里再加载。
+    static std::string android_app_private_dir() {
+        std::ifstream cmd("/proc/self/cmdline", std::ios::binary);
+        std::string pkg;
+        if (cmd) std::getline(cmd, pkg, '\0');
+        if (pkg.empty()) return {};
+        return "/data/data/" + pkg + "/files";
+    }
+
+    /// 把自身（loader）提升到 RTLD_GLOBAL：
+    /// 内核用 RTLD_LOCAL 从 memfd 加载 loader，导致 dlopen 的模块解析不到 loader 导出的
+    /// lua_* / patchlib_* 符号。用 SONAME + RTLD_NOLOAD|RTLD_GLOBAL 可把已加载的自身提升为全局。
+    static void promote_self_global() {
+        static bool tried = false;
+        if (tried) return;
+        tried = true;
+#if defined(__ANDROID__)
+        const std::string soname =
+                std::string("libloader.") + LUALOADER_PLATFORM_NAME + "." + LUALOADER_ARCH_NAME + ".so";
+        void *h = dlopen(soname.c_str(), RTLD_NOW | RTLD_NOLOAD | RTLD_GLOBAL);
+        if (h) {
+            LOG_INFO("[native] 已将自身提升为 RTLD_GLOBAL ({}): {}", soname, h);
+        } else {
+            const char *e = dlerror();
+            LOG_WARN("[native] 提升自身为 GLOBAL 失败: {} ({})", soname, e ? e : "?");
+        }
+#endif
+    }
+#endif
+
+    /// 准备可加载的原生库目录：
+    /// - Android：把各原生库复制到应用私有目录（规避 linker namespace 限制），返回该目录
+    /// - 其它平台：直接返回原始目录
+    static std::vector<std::string> prepare_native_libs(const std::string &mod_dir,
+                                                        const std::string &private_dir,
+                                                        const std::string &platform,
+                                                        const std::string &arch,
+                                                        const std::string &mod_id) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        std::vector<std::string> src_dirs = native_dirs(mod_dir, private_dir, platform, arch);
+#if defined(__ANDROID__)
+        promote_self_global();
+        const std::string base = android_app_private_dir();
+        if (base.empty()) return src_dirs; // 拿不到私有目录就退回原路径（大概率仍会失败）
+        std::string safe_id = mod_id;
+        for (char &c: safe_id) if (!isalnum((unsigned char) c) && c != '.' && c != '_' && c != '-') c = '_';
+        const std::string dst_dir = base + "/lualoader_native/" + safe_id;
+        bool copied = false;
+        for (const auto &dir: src_dirs) {
+            if (!fs::is_directory(dir, ec)) continue;
+            for (const auto &entry: fs::directory_iterator(dir, ec)) {
+                if (!entry.is_regular_file()) continue;
+                if (entry.path().extension() != ".so") continue;
+                fs::create_directories(dst_dir, ec);
+                const std::string dst = dst_dir + "/" + entry.path().filename().string();
+                fs::copy_file(entry.path(), dst, fs::copy_options::overwrite_existing, ec);
+                if (ec) {
+                    LOG_WARN("[mod {}] 复制原生库失败: {} ({})", mod_id, entry.path().string(), ec.message());
+                } else {
+                    copied = true;
+                    LOG_INFO("[mod {}] 原生库已复制到私有目录: {}", mod_id, dst);
+                }
+            }
+        }
+        if (copied) return {dst_dir};
+        return src_dirs;
+#else
+        (void) mod_id;
+        return src_dirs;
+#endif
+    }
+
     /// 配置 package：把 Mod 目录加入 package.path（保留系统默认路径）。
     /// 同时开放 C 原生模块：把 Mod 的平台原生目录加入 package.cpath，并保留 loadlib。
     /// 兼容说明：纯 Lua Mod 不受影响；原生模块为可选，仅当 Mod 自带对应平台 .so/.dll 时才会被加载。
     static void configure_package(lua_State *L, const std::string &mod_dir,
-                                  const std::string &private_dir,
-                                  const std::string &platform,
-                                  const std::string &arch) {
+                                  const std::vector<std::string> &native_search_dirs) {
         lua_getglobal(L, "package");
         if (!lua_istable(L, -1)) {
             lua_pop(L, 1);
@@ -88,7 +165,7 @@ namespace lualoader::lua_engine {
 
         // 开放原生模块：Mod 平台原生目录优先
         std::string native_pattern;
-        for (const auto &dir: native_dirs(mod_dir, private_dir, platform, arch)) {
+        for (const auto &dir: native_search_dirs) {
 #ifdef _WIN32
             native_pattern += dir + "/?.dll;";
 #else
@@ -122,35 +199,49 @@ namespace lualoader::lua_engine {
         return dirs;
     }
 
-    /// 预加载原生库（RTLD_GLOBAL）：让模块能解析到 loader 进程里导出的内核 API / Lua API。
-    /// 只加载当前平台目录下存在的库；纯 Lua Mod 不受影响。
-    static void preload_native_libs(const std::string &mod_dir, const std::string &private_dir,
-                                    const std::string &platform, const std::string &arch,
+    /// 预加载原生库并注入 LualoaderMod API 表。
+    /// Android 上模块无法通过 ELF 作用域解析 lua_*/patchlib_*，统一走 ll_set_api 注入；
+    /// 桌面端同时保留 RTLD_GLOBAL，兼容直接 extern 的写法。
+    static void preload_native_libs(const std::vector<std::string> &search_dirs,
                                     const std::string &mod_id) {
         namespace fs = std::filesystem;
         std::error_code ec;
-        for (const auto &dir: native_dirs(mod_dir, private_dir, platform, arch)) {
+        for (const auto &dir: search_dirs) {
             if (!fs::is_directory(dir, ec)) continue;
             for (const auto &entry: fs::directory_iterator(dir, ec)) {
                 if (!entry.is_regular_file()) continue;
                 const std::string ext = entry.path().extension().string();
 #ifdef _WIN32
                 if (ext != ".dll") continue;
+                HMODULE h = LoadLibraryA(entry.path().string().c_str());
+                if (!h) {
+                    LOG_WARN("[mod {}] LoadLibrary failed: {}", mod_id, entry.path().string());
+                    continue;
+                }
+                auto set_api = reinterpret_cast<void (*)(const ll_api_t *)>(
+                        reinterpret_cast<void *>(GetProcAddress(h, "ll_set_api")));
+                if (set_api) {
+                    set_api(lualoader::mod_api::get_api());
+                    LOG_INFO("[mod {}] injected ll_api ({} symbols)", mod_id,
+                             lualoader::mod_api::symbol_count());
+                }
+                LOG_INFO("[mod {}] preloaded native module: {}", mod_id, entry.path().filename().string());
 #else
                 if (ext != ".so") continue;
-#endif
-#ifdef _WIN32
-                void *h = (void *) LoadLibraryA(entry.path().string().c_str());
-                if (!h) LOG_WARN("[mod {}] LoadLibrary failed: {}", mod_id, entry.path().string());
-                else LOG_INFO("[mod {}] preloaded native module: {}", mod_id, entry.path().filename().string());
-#else
                 void *h = dlopen(entry.path().c_str(), RTLD_NOW | RTLD_GLOBAL);
                 if (!h) {
                     const char *e = dlerror();
                     LOG_WARN("[mod {}] dlopen failed: {} ({})", mod_id, entry.path().string(), e ? e : "?");
-                } else {
-                    LOG_INFO("[mod {}] preloaded native module: {}", mod_id, entry.path().filename().string());
+                    continue;
                 }
+                auto set_api = reinterpret_cast<void (*)(const ll_api_t *)>(
+                        dlsym(h, "ll_set_api"));
+                if (set_api) {
+                    set_api(lualoader::mod_api::get_api());
+                    LOG_INFO("[mod {}] injected ll_api ({} symbols)", mod_id,
+                             lualoader::mod_api::symbol_count());
+                }
+                LOG_INFO("[mod {}] preloaded native module: {}", mod_id, entry.path().filename().string());
 #endif
             }
         }
@@ -351,8 +442,10 @@ namespace lualoader::lua_engine {
         handle->L = L;
 
         open_all_libs(L);
-        configure_package(L, handle->mod_dir, private_dir, handle->platform, handle->arch);
-        preload_native_libs(handle->mod_dir, private_dir, handle->platform, handle->arch, handle->mod_id);
+        const std::vector<std::string> native_search = prepare_native_libs(
+                handle->mod_dir, private_dir, handle->platform, handle->arch, handle->mod_id);
+        configure_package(L, handle->mod_dir, native_search);
+        preload_native_libs(native_search, handle->mod_id);
         lua_api::register_api(L, handle);
 
         LOG_INFO("Running Lua entry: {}", entry_path);
