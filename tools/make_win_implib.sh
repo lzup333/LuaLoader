@@ -6,11 +6,14 @@ set -e
 DLL="$1"; OUT="${2:-.}"
 command -v gendef >/dev/null || { echo "缺少 gendef（apt install mingw-w64-tools）" >&2; exit 1; }
 BASE="$(basename "$DLL" .dll)"
+ABS="$(cd "$(dirname "$DLL")" && pwd)/$(basename "$DLL")"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-gendef "$DLL" -o "$TMP/$BASE.def" >/dev/null 2>&1 || gendef "$DLL" > "$TMP/$BASE.def"
-case "$DLL" in
-  *x86_64*) DT=x86_64-w64-mingw32-dlltool ;;
-  *)        DT=i686-w64-mingw32-dlltool ;;
+( cd "$TMP" && gendef "$ABS" >/dev/null )
+DEF="$TMP/$BASE.def"
+case "$(basename "$DLL")" in
+  *x64*|*x86_64*) DT=x86_64-w64-mingw32-dlltool ;;
+  *)              DT=i686-w64-mingw32-dlltool ;;
 esac
-"$DT" -d "$TMP/$BASE.def" -l "$OUT/$BASE.dll.a" -D "$(basename "$DLL")"
+mkdir -p "$OUT"
+"$DT" -d "$DEF" -l "$OUT/$BASE.dll.a" -D "$(basename "$DLL")"
 echo "生成: $OUT/$BASE.dll.a"
