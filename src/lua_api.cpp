@@ -1186,7 +1186,15 @@ namespace lualoader::lua_api {
         if (n < 0) return false;
         if (!tefstd_vector_init(vec, sizeof(patch_handle_t))) return false;
         for (int i = 0; i < n; ++i) {
-            if (!tefstd_vector_push_back(vec, &types[i])) {
+            // Android 上 MakeGenericType/MakeGenericMethod 需要 System.Type(MonoType)，
+            // 而 Lua 侧 get_type 拿到的是 Il2CppClass*，这里统一转换。
+            // （桌面端 patchlib_type_get_mono_type 是恒等宏）
+            patch_handle_t mt = patchlib_type_get_mono_type(types[i]);
+            if (!mt) {
+                tefstd_vector_destroy(vec);
+                return false;
+            }
+            if (!tefstd_vector_push_back(vec, &mt)) {
                 tefstd_vector_destroy(vec);
                 return false;
             }
