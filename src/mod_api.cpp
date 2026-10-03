@@ -166,7 +166,17 @@ namespace lualoader::mod_api {
                     !in_range(name, 1))
                     continue;
                 if (*name == '\0') continue;
-                g_symbols.emplace(name, const_cast<unsigned char *>(base) + s.st_value);
+                void *addr = const_cast<unsigned char *>(base) + s.st_value;
+                if (type == STT_OBJECT) {
+                    // patchlib_* 在 loader 中是“函数指针变量”，其值才是目标函数；
+                    // 解析时直接取值，保证 lookup 返回可直接调用的指针。
+                    if (strncmp(name, "patchlib_", 9) == 0) {
+                        void *fn = *reinterpret_cast<void **>(addr);
+                        if (fn) g_symbols.emplace(name, fn);
+                    }
+                    continue; // 其它对象符号不暴露
+                }
+                g_symbols.emplace(name, addr);
             }
             LOG_INFO("[native] 已建立自身符号表: {} 个符号", g_symbols.size());
 #endif
