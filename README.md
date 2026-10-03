@@ -185,6 +185,16 @@ todo_list_android = { "android_setup" }        -- 只在 Android 执行
 - `mod.patch.get_basic_type(name)`：`"int32"`/`"float"`/`"bool"`/`"object"` 等
 - `mod.patch.free(handle)`
 
+内省 / 枚举 / 选重载 / 泛型（1.5.0 新增，详见 `doc/api.md`）：
+
+- `get_full_name(type)` / `get_namespace(type)`
+- `get_fields(type)` / `get_methods(type)` / `get_properties(type)` / `get_inner_types(type)`
+- `get_method_by_param_types(type, name, {type...})` / `get_method_by_signature(type, name, {type...}, {name...})`
+- `make_generic_type(def, {type...})` / `make_generic_instance(method, {type...})`
+- `method_name/param_count/token/is_instance/is_static`、`field_name/is_const/is_instance/is_static`、`property_name`
+- 容器：`dictionary_create/add/set_value/get_value/length/remove/clear`、`list_create/add/remove/remove_at/clear/copy_from/get_array`、`array_empty`
+- 按值结构体参数（仅 Android）：`struct_arg({"float","float"},{x,y})` + `invoke_value_args(method, instance, {arg...})`
+
 读写字段：
 
 ```lua
