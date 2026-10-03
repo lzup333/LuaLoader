@@ -45,6 +45,8 @@ extern "C" {
 #include "tefkernel/patchlib/method.h"
 #include "tefkernel/patchlib/property.h"
 #include "tefkernel/patchlib/struct/array.h"
+#include "tefkernel/patchlib/struct/dictionary.h"
+#include "tefkernel/patchlib/struct/list.h"
 #include "tefkernel/patchlib/struct/string.h"
 #include "tefkernel/patchlib/type.h"
 #include "tefkernel/tefstd/vector.h"
@@ -1046,6 +1048,559 @@ namespace lualoader::lua_api {
         return 1;
     }
 
+    // ========================================================================
+    // 类型/成员内省（对应内核 type_*/method_*/field_* 系列）
+    // ========================================================================
+
+    /// mod.patch.get_full_name(type) -> "命名空间.类名" | nil
+    static int l_patch_get_full_name(lua_State *L) {
+        char *full = patchlib_type_get_full_name(to_handle(L, 1));
+        if (!full) { lua_pushnil(L); return 1; }
+        lua_pushstring(L, full); // 内核用 malloc 分配，拷贝后释放
+        free(full);
+        return 1;
+    }
+
+    /// mod.patch.get_namespace(type) -> string | nil
+    static int l_patch_get_namespace(lua_State *L) {
+        const char *ns = patchlib_type_get_namespace(to_handle(L, 1));
+        if (ns) lua_pushstring(L, ns); else lua_pushnil(L);
+        return 1;
+    }
+
+    // 把内核填充的句柄向量逐个压成 Lua 表（元素为 patch_handle_t）
+    static void push_handle_table_from_vector(lua_State *L, tefstd_vector_t *vec) {
+        const size_t n = tefstd_vector_size(vec);
+        lua_createtable(L, static_cast<int>(n), 0);
+        for (size_t i = 0; i < n; ++i) {
+            auto *slot = static_cast<patch_handle_t *>(tefstd_vector_at(vec, i));
+            push_handle(L, slot ? *slot : nullptr);
+            lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+        }
+    }
+
+    // 通用：type_get_xxx(type, including_parent, vector)
+    template<typename Fn>
+    static int type_member_list(lua_State *L, Fn fn) {
+        const patch_handle_t type = to_handle(L, 1);
+        const bool including_parent = lua_isnoneornil(L, 2) ? false : (lua_toboolean(L, 2) != 0);
+        if (!type) { lua_pushnil(L); return 1; }
+
+        tefstd_vector_t vec;
+        if (!tefstd_vector_init(&vec, sizeof(patch_handle_t))) {
+            lua_pushnil(L);
+            return 1;
+        }
+        const bool ok = fn(type, including_parent, &vec);
+        if (!ok) {
+            tefstd_vector_destroy(&vec);
+            lua_pushnil(L);
+            return 1;
+        }
+        push_handle_table_from_vector(L, &vec);
+        tefstd_vector_destroy(&vec);
+        return 1;
+    }
+
+    /// mod.patch.get_fields(type[, including_parent]) -> { field, ... } | nil
+    static int l_patch_get_fields(lua_State *L) {
+        return type_member_list(L, [](patch_handle_t t, bool p, tefstd_vector_t *v) {
+            return patchlib_type_get_fields(t, p, v);
+        });
+    }
+
+    /// mod.patch.get_methods(type[, including_parent]) -> { method, ... } | nil
+    static int l_patch_get_methods(lua_State *L) {
+        return type_member_list(L, [](patch_handle_t t, bool p, tefstd_vector_t *v) {
+            return patchlib_type_get_methods(t, p, v);
+        });
+    }
+
+    /// mod.patch.get_properties(type[, including_parent]) -> { property, ... } | nil
+    static int l_patch_get_properties(lua_State *L) {
+        return type_member_list(L, [](patch_handle_t t, bool p, tefstd_vector_t *v) {
+            return patchlib_type_get_properties(t, p, v);
+        });
+    }
+
+    /// mod.patch.get_inner_types(type[, including_parent]) -> { type, ... } | nil
+    static int l_patch_get_inner_types(lua_State *L) {
+        return type_member_list(L, [](patch_handle_t t, bool p, tefstd_vector_t *v) {
+            return patchlib_type_get_inner_types(t, p, v);
+        });
+    }
+
+    // 从 Lua 表读取类型句柄数组（用于按类型选重载/泛型）
+    static int read_type_array(lua_State *L, int idx, patch_handle_t *out, int max_n) {
+        luaL_checktype(L, idx, LUA_TTABLE);
+        const int n = static_cast<int>(luaL_len(L, idx));
+        if (n < 0 || n > max_n) return -1;
+        for (int i = 1; i <= n; ++i) {
+            lua_rawgeti(L, idx, i);
+            out[i - 1] = to_handle(L, -1);
+            lua_pop(L, 1);
+        }
+        return n;
+    }
+
+    /// mod.patch.get_method_by_param_types(type, name, { type, ... }) -> method | nil
+    static int l_patch_get_method_by_param_types(lua_State *L) {
+        const patch_handle_t type = to_handle(L, 1);
+        const char *name = luaL_checkstring(L, 2);
+        patch_handle_t types[MAX_CALL_ARGS] = {nullptr};
+        const int n = read_type_array(L, 3, types, MAX_CALL_ARGS);
+        if (n < 0) return luaL_error(L, "bad type array");
+        push_handle(L, type ? patchlib_type_get_method_by_param_types(type, name, n, types) : nullptr);
+        return 1;
+    }
+
+    /// mod.patch.get_method_by_signature(type, name, { type, ... }, { "name", ... }) -> method | nil
+    static int l_patch_get_method_by_signature(lua_State *L) {
+        const patch_handle_t type = to_handle(L, 1);
+        const char *name = luaL_checkstring(L, 2);
+        patch_handle_t types[MAX_CALL_ARGS] = {nullptr};
+        const int n = read_type_array(L, 3, types, MAX_CALL_ARGS);
+        if (n < 0) return luaL_error(L, "bad type array");
+
+        std::vector<std::string> store;
+        std::vector<const char *> names;
+        if (!lua_isnoneornil(L, 4)) {
+            luaL_checktype(L, 4, LUA_TTABLE);
+            const int m = static_cast<int>(luaL_len(L, 4));
+            if (m != n) return luaL_error(L, "names count mismatch");
+            store.reserve(m);
+            for (int i = 1; i <= m; ++i) {
+                lua_rawgeti(L, 4, i);
+                store.emplace_back(luaL_checkstring(L, -1));
+                lua_pop(L, 1);
+            }
+            for (auto &s: store) names.push_back(s.c_str());
+        }
+        push_handle(L, type ? patchlib_type_get_method_by_signature(
+                type, name, n, types, names.empty() ? nullptr : names.data()) : nullptr);
+        return 1;
+    }
+
+    // 用 Lua 表里的类型句柄填充 tefstd_vector_t（泛型参数）
+    static bool fill_type_vector(lua_State *L, int idx, tefstd_vector_t *vec) {
+        patch_handle_t types[MAX_CALL_ARGS] = {nullptr};
+        const int n = read_type_array(L, idx, types, MAX_CALL_ARGS);
+        if (n < 0) return false;
+        if (!tefstd_vector_init(vec, sizeof(patch_handle_t))) return false;
+        for (int i = 0; i < n; ++i) {
+            if (!tefstd_vector_push_back(vec, &types[i])) {
+                tefstd_vector_destroy(vec);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// mod.patch.make_generic_type(generic_type_def, { type, ... }) -> type | nil
+    static int l_patch_make_generic_type(lua_State *L) {
+        const patch_handle_t def = to_handle(L, 1);
+        tefstd_vector_t vec;
+        if (!fill_type_vector(L, 2, &vec)) { lua_pushnil(L); return 1; }
+        push_handle(L, def ? patchlib_type_make_generic_type(def, &vec) : nullptr);
+        tefstd_vector_destroy(&vec);
+        return 1;
+    }
+
+    /// mod.patch.make_generic_instance(method, { type, ... }) -> method | nil
+    static int l_patch_make_generic_instance(lua_State *L) {
+        const patch_handle_t m = to_handle(L, 1);
+        tefstd_vector_t vec;
+        if (!fill_type_vector(L, 2, &vec)) { lua_pushnil(L); return 1; }
+        push_handle(L, m ? patchlib_method_make_generic_instance(m, &vec) : nullptr);
+        tefstd_vector_destroy(&vec);
+        return 1;
+    }
+
+    /// mod.patch.method_name(method) -> string | nil
+    static int l_patch_method_name(lua_State *L) {
+        const patch_handle_t m = to_handle(L, 1);
+        const char *n = m ? patchlib_method_get_name(m) : nullptr;
+        if (n) lua_pushstring(L, n); else lua_pushnil(L);
+        return 1;
+    }
+
+    /// mod.patch.method_param_count(method) -> int
+    static int l_patch_method_param_count(lua_State *L) {
+        const patch_handle_t m = to_handle(L, 1);
+        lua_pushinteger(L, m ? static_cast<lua_Integer>(patchlib_method_get_param_count(m)) : 0);
+        return 1;
+    }
+
+    /// mod.patch.method_token(method) -> int（可当缓存键）
+    static int l_patch_method_token(lua_State *L) {
+        const patch_handle_t m = to_handle(L, 1);
+        lua_pushinteger(L, m ? static_cast<lua_Integer>(patchlib_method_get_token(m)) : 0);
+        return 1;
+    }
+
+    /// mod.patch.method_is_instance(method) -> bool
+    static int l_patch_method_is_instance(lua_State *L) {
+        const patch_handle_t m = to_handle(L, 1);
+        lua_pushboolean(L, m && patchlib_method_is_instance(m));
+        return 1;
+    }
+
+    /// mod.patch.method_is_static(method) -> bool
+    static int l_patch_method_is_static(lua_State *L) {
+        const patch_handle_t m = to_handle(L, 1);
+        lua_pushboolean(L, m && patchlib_method_is_static(m));
+        return 1;
+    }
+
+    /// mod.patch.field_name(field) -> string | nil
+    static int l_patch_field_name(lua_State *L) {
+        const patch_handle_t f = to_handle(L, 1);
+        const char *n = f ? patchlib_field_get_name(f) : nullptr;
+        if (n) lua_pushstring(L, n); else lua_pushnil(L);
+        return 1;
+    }
+
+    /// mod.patch.field_is_const(field) -> bool
+    static int l_patch_field_is_const(lua_State *L) {
+        const patch_handle_t f = to_handle(L, 1);
+        lua_pushboolean(L, f && patchlib_field_is_const(f));
+        return 1;
+    }
+
+    /// mod.patch.field_is_instance(field) -> bool
+    static int l_patch_field_is_instance(lua_State *L) {
+        const patch_handle_t f = to_handle(L, 1);
+        lua_pushboolean(L, f && patchlib_field_is_instance(f));
+        return 1;
+    }
+
+    /// mod.patch.field_is_static(field) -> bool
+    static int l_patch_field_is_static(lua_State *L) {
+        const patch_handle_t f = to_handle(L, 1);
+        lua_pushboolean(L, f && patchlib_field_is_static(f));
+        return 1;
+    }
+
+    /// mod.patch.property_name(property) -> string | nil
+    static int l_patch_property_name(lua_State *L) {
+        const patch_handle_t p = to_handle(L, 1);
+        const char *n = p ? patchlib_property_get_name(p) : nullptr;
+        if (n) lua_pushstring(L, n); else lua_pushnil(L);
+        return 1;
+    }
+
+    /// mod.patch.array_empty(array) -> bool
+    static int l_patch_array_empty(lua_State *L) {
+        const patch_handle_t a = to_handle(L, 1);
+        lua_pushboolean(L, a && patchlib_array_empty(a));
+        return 1;
+    }
+
+    // ========================================================================
+    // 容器（Dictionary / List）——值按显式类型字符串编组
+    // ========================================================================
+
+    // 把 Lua 第 idx 个参数按类型字符串读进 8 字节存储；返回存储指针
+    static void *read_typed_value(lua_State *L, int idx, const char *type_name, uint64_t *storage) {
+        patch_type_t type;
+        if (!type_name || !type_from_name(type_name, &type))
+            return nullptr;
+        read_patch_value(L, idx, type, storage);
+        return storage;
+    }
+
+    /// mod.patch.dictionary_create(key_type, value_type[, capacity]) -> dict
+    static int l_patch_dictionary_create(lua_State *L) {
+        const patch_handle_t key_type = to_handle(L, 1);
+        const patch_handle_t value_type = to_handle(L, 2);
+        const size_t capacity = lua_isnoneornil(L, 3)
+                                    ? 0 : static_cast<size_t>(luaL_checkinteger(L, 3));
+        push_handle(L, (key_type && value_type)
+                           ? patchlib_dictionary_create(key_type, value_type, capacity)
+                           : nullptr);
+        return 1;
+    }
+
+    /// mod.patch.dictionary_add(dict, key, key_type, value, value_type) -> bool
+    static int l_patch_dictionary_add(lua_State *L) {
+        const patch_handle_t dict = to_handle(L, 1);
+        const char *kt = luaL_checkstring(L, 3);
+        const char *vt = luaL_checkstring(L, 5);
+        uint64_t ks = 0, vs = 0;
+        void *k = read_typed_value(L, 2, kt, &ks);
+        void *v = read_typed_value(L, 4, vt, &vs);
+        if (!dict || !k || !v) return luaL_error(L, "bad dictionary/key/value");
+        lua_pushboolean(L, patchlib_dictionary_add(dict, k, v));
+        return 1;
+    }
+
+    /// mod.patch.dictionary_set_value(dict, key, key_type, value, value_type) -> bool
+    static int l_patch_dictionary_set_value(lua_State *L) {
+        const patch_handle_t dict = to_handle(L, 1);
+        const char *kt = luaL_checkstring(L, 3);
+        const char *vt = luaL_checkstring(L, 5);
+        uint64_t ks = 0, vs = 0;
+        void *k = read_typed_value(L, 2, kt, &ks);
+        void *v = read_typed_value(L, 4, vt, &vs);
+        if (!dict || !k || !v) return luaL_error(L, "bad dictionary/key/value");
+        lua_pushboolean(L, patchlib_dictionary_set_value(dict, k, v));
+        return 1;
+    }
+
+    /// mod.patch.dictionary_get_value(dict, key, key_type, value_type) -> value | nil
+    static int l_patch_dictionary_get_value(lua_State *L) {
+        const patch_handle_t dict = to_handle(L, 1);
+        const char *kt = luaL_checkstring(L, 3);
+        const char *vt = luaL_checkstring(L, 4);
+        uint64_t ks = 0, out = 0;
+        void *k = read_typed_value(L, 2, kt, &ks);
+        patch_type_t vtype;
+        if (!dict || !k || !vt || !type_from_name(vt, &vtype))
+            return luaL_error(L, "bad dictionary/key/value_type");
+        if (!patchlib_dictionary_get_value(dict, k, &out)) {
+            lua_pushnil(L);
+            return 1;
+        }
+        push_patch_value(L, vtype, &out);
+        return 1;
+    }
+
+    /// mod.patch.dictionary_length(dict) -> int
+    static int l_patch_dictionary_length(lua_State *L) {
+        const patch_handle_t dict = to_handle(L, 1);
+        lua_pushinteger(L, dict ? static_cast<lua_Integer>(patchlib_dictionary_length(dict)) : 0);
+        return 1;
+    }
+
+    /// mod.patch.dictionary_remove(dict, key, key_type) -> bool
+    static int l_patch_dictionary_remove(lua_State *L) {
+        const patch_handle_t dict = to_handle(L, 1);
+        const char *kt = luaL_checkstring(L, 3);
+        uint64_t ks = 0;
+        void *k = read_typed_value(L, 2, kt, &ks);
+        if (!dict || !k) return luaL_error(L, "bad dictionary/key");
+        lua_pushboolean(L, patchlib_dictionary_remove(dict, k));
+        return 1;
+    }
+
+    /// mod.patch.dictionary_clear(dict) -> bool
+    static int l_patch_dictionary_clear(lua_State *L) {
+        const patch_handle_t dict = to_handle(L, 1);
+        lua_pushboolean(L, dict && patchlib_dictionary_clear(dict));
+        return 1;
+    }
+
+    /// mod.patch.list_create(type[, capacity]) -> list
+    static int l_patch_list_create(lua_State *L) {
+        const patch_handle_t type = to_handle(L, 1);
+        const size_t capacity = lua_isnoneornil(L, 2)
+                                    ? 0 : static_cast<size_t>(luaL_checkinteger(L, 2));
+        push_handle(L, type ? patchlib_list_create(capacity, type) : nullptr);
+        return 1;
+    }
+
+    /// mod.patch.list_add(list, value, value_type) -> bool
+    static int l_patch_list_add(lua_State *L) {
+        const patch_handle_t list = to_handle(L, 1);
+        const char *vt = luaL_checkstring(L, 3);
+        uint64_t vs = 0;
+        void *v = read_typed_value(L, 2, vt, &vs);
+        if (!list || !v) return luaL_error(L, "bad list/value");
+        lua_pushboolean(L, patchlib_list_add(list, v));
+        return 1;
+    }
+
+    /// mod.patch.list_remove(list, value, value_type) -> bool
+    static int l_patch_list_remove(lua_State *L) {
+        const patch_handle_t list = to_handle(L, 1);
+        const char *vt = luaL_checkstring(L, 3);
+        uint64_t vs = 0;
+        void *v = read_typed_value(L, 2, vt, &vs);
+        if (!list || !v) return luaL_error(L, "bad list/value");
+        lua_pushboolean(L, patchlib_list_remove(list, v));
+        return 1;
+    }
+
+    /// mod.patch.list_remove_at(list, index) -> bool（0 基）
+    static int l_patch_list_remove_at(lua_State *L) {
+        const patch_handle_t list = to_handle(L, 1);
+        const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
+        lua_pushboolean(L, list && patchlib_list_remove_at(list, index));
+        return 1;
+    }
+
+    /// mod.patch.list_clear(list) -> bool
+    static int l_patch_list_clear(lua_State *L) {
+        const patch_handle_t list = to_handle(L, 1);
+        lua_pushboolean(L, list && patchlib_list_clear(list));
+        return 1;
+    }
+
+    /// mod.patch.list_copy_from(list, array) -> bool
+    static int l_patch_list_copy_from(lua_State *L) {
+        const patch_handle_t list = to_handle(L, 1);
+        const patch_handle_t array = to_handle(L, 2);
+        lua_pushboolean(L, list && array && patchlib_list_copy_from(list, array));
+        return 1;
+    }
+
+    /// mod.patch.list_get_array(list) -> array | nil
+    static int l_patch_list_get_array(lua_State *L) {
+        const patch_handle_t list = to_handle(L, 1);
+        push_handle(L, list ? patchlib_list_get_array(list) : nullptr);
+        return 1;
+    }
+
+    // ========================================================================
+    // 按值结构体参数调用（Android）：mod.patch.struct_arg + invoke_value_args
+    // ========================================================================
+#if defined(__ANDROID__)
+    static constexpr const char *STRUCT_ARG_MT = "lualoader.struct_arg";
+    static constexpr int MAX_STRUCT_FIELDS = 32;
+
+    struct LuaStructArg {
+        void *data;                 // 结构体本体（malloc）
+        size_t data_size;
+        patchlib_value_arg_t spec;  // data/data_size/field_types/field_count
+        patch_type_t field_types[MAX_STRUCT_FIELDS];
+    };
+
+    static int l_struct_arg_gc(lua_State *L) {
+        auto *sa = static_cast<LuaStructArg *>(luaL_checkudata(L, 1, STRUCT_ARG_MT));
+        if (sa->data) { free(sa->data); sa->data = nullptr; }
+        return 0;
+    }
+
+    /// mod.patch.struct_arg({ "float", "float" }, { 1.5, 2.5 }) -> struct_arg
+    static int l_patch_struct_arg(lua_State *L) {
+        luaL_checktype(L, 1, LUA_TTABLE);
+        luaL_checktype(L, 2, LUA_TTABLE);
+        const int n = static_cast<int>(luaL_len(L, 1));
+        if (n <= 0 || n > MAX_STRUCT_FIELDS) return luaL_error(L, "bad field count");
+
+        auto *sa = static_cast<LuaStructArg *>(lua_newuserdatauv(L, sizeof(LuaStructArg), 0));
+        memset(sa, 0, sizeof(*sa));
+        if (luaL_newmetatable(L, STRUCT_ARG_MT)) {
+            lua_pushcfunction(L, l_struct_arg_gc);
+            lua_setfield(L, -2, "__gc");
+        }
+        lua_setmetatable(L, -2);
+
+        // 解析字段类型并按自然对齐计算偏移
+        size_t offset = 0, max_align = 1;
+        for (int i = 0; i < n; ++i) {
+            lua_rawgeti(L, 1, i + 1);
+            patch_type_t t;
+            if (!type_from_name(luaL_checkstring(L, -1), &t))
+                return luaL_error(L, "unknown field type: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+            sa->field_types[i] = t;
+
+            size_t sz = 8, al = 8;
+            switch (t) {
+                case PATCH_BOOL: case PATCH_INT8: case PATCH_UINT8: sz = 1; al = 1; break;
+                case PATCH_INT16: case PATCH_UINT16: case PATCH_CHAR: sz = 2; al = 2; break;
+                case PATCH_INT32: case PATCH_UINT32: case PATCH_FLOAT: sz = 4; al = 4; break;
+                case PATCH_INT64: case PATCH_UINT64: case PATCH_DOUBLE: sz = 8; al = 8; break;
+                case PATCH_POINTER: case PATCH_OBJECT: sz = sizeof(void *); al = alignof(void *); break;
+                default: return luaL_error(L, "unsupported field type");
+            }
+            offset = (offset + al - 1) & ~(al - 1);
+            offset += sz;
+            if (al > max_align) max_align = al;
+        }
+        size_t total = (offset + max_align - 1) & ~(max_align - 1);
+        sa->data = malloc(total);
+        if (!sa->data) return luaL_error(L, "struct_arg: out of memory");
+        memset(sa->data, 0, total);
+
+        // 逐字段按偏移写入
+        offset = 0;
+        for (int i = 0; i < n; ++i) {
+            const size_t al = (sa->field_types[i] == PATCH_INT32 || sa->field_types[i] == PATCH_FLOAT ||
+                               sa->field_types[i] == PATCH_UINT32) ? 4 :
+                              (sa->field_types[i] == PATCH_BOOL || sa->field_types[i] == PATCH_INT8 ||
+                               sa->field_types[i] == PATCH_UINT8) ? 1 :
+                              (sa->field_types[i] == PATCH_INT16 || sa->field_types[i] == PATCH_UINT16 ||
+                               sa->field_types[i] == PATCH_CHAR) ? 2 : 8;
+            offset = (offset + al - 1) & ~(al - 1);
+            lua_rawgeti(L, 2, i + 1);
+            read_patch_value(L, -1, sa->field_types[i],
+                             static_cast<char *>(sa->data) + offset);
+            lua_pop(L, 1);
+            offset += (sa->field_types[i] == PATCH_INT64 || sa->field_types[i] == PATCH_UINT64 ||
+                       sa->field_types[i] == PATCH_DOUBLE) ? 8 :
+                      (sa->field_types[i] == PATCH_INT32 || sa->field_types[i] == PATCH_FLOAT ||
+                       sa->field_types[i] == PATCH_UINT32) ? 4 :
+                      (sa->field_types[i] == PATCH_INT16 || sa->field_types[i] == PATCH_UINT16 ||
+                       sa->field_types[i] == PATCH_CHAR) ? 2 :
+                      (sa->field_types[i] == PATCH_BOOL || sa->field_types[i] == PATCH_INT8 ||
+                       sa->field_types[i] == PATCH_UINT8) ? 1 : sizeof(void *);
+        }
+
+        sa->data_size = total;
+        sa->spec.data = sa->data;
+        sa->spec.data_size = total;
+        sa->spec.field_types = sa->field_types;
+        sa->spec.field_count = static_cast<size_t>(n);
+        return 1;
+    }
+
+    /// mod.patch.invoke_value_args(method, instance, { arg... }) -> value | false
+    /// 表中元素可以是：普通值（按签名编组），或 struct_arg 对象（按值结构体）
+    static int l_patch_invoke_value_args(lua_State *L) {
+        const patch_handle_t method = to_handle(L, 1);
+        if (!method) return luaL_error(L, "invalid method handle");
+
+        patch_method_signature_t sig;
+        if (!patchlib_method_get_signature(method, &sig))
+            return luaL_error(L, "cannot get method signature");
+
+        patch_handle_t instance = nullptr;
+        int arg_start = 2;
+        if (sig.is_instance) {
+            instance = to_handle(L, 2);
+            arg_start = 3;
+        }
+
+        const int argc = static_cast<int>(tefstd_vector_size(&sig.arg_types));
+        uint64_t storage[MAX_CALL_ARGS][1] = {};
+        void *argv[MAX_CALL_ARGS] = {};
+        build_arg_array(L, arg_start, &sig, storage, argv, MAX_CALL_ARGS);
+
+        // 结构体参数：替换 args[i] 并填 value_args[i]
+        patchlib_value_arg_t value_args[MAX_CALL_ARGS] = {};
+        for (int i = 0; i < argc && i < MAX_CALL_ARGS; ++i) {
+            lua_rawgeti(L, arg_start, i + 1);
+            if (auto *sa = static_cast<LuaStructArg *>(luaL_testudata(L, -1, STRUCT_ARG_MT))) {
+                argv[i] = sa->data;
+                value_args[i] = sa->spec;
+            }
+            lua_pop(L, 1);
+        }
+
+        uint64_t result = 0;
+        const bool ok = patchlib_method_invoke_value_args(method, instance, &result, argv, value_args);
+        const patch_type_t return_type = sig.return_type;
+        patchlib_method_signature_free(&sig);
+        if (!ok) {
+            lua_pushboolean(L, false);
+            return 1;
+        }
+        push_patch_value(L, return_type, &result);
+        return 1;
+    }
+#else
+    static int l_patch_struct_arg(lua_State *L) {
+        return luaL_error(L, "struct_arg 仅 Android 可用");
+    }
+    static int l_patch_invoke_value_args(lua_State *L) {
+        (void) L;
+        lua_pushboolean(L, 0);
+        return 1;
+    }
+#endif
+
     /// mod.patch.field_pointer(field, instance) -> lightuserdata | nil
     /// 仅 Android 暴露（原生字段真实指针）；桌面端返回 nil
     static int l_patch_field_pointer(lua_State *L) {
@@ -1474,6 +2029,43 @@ namespace lualoader::lua_api {
             {"property_get_method", l_patch_property_get_method},
             {"property_set_method", l_patch_property_set_method},
             {"get_method_by_names", l_patch_get_method_by_names},
+            {"get_full_name", l_patch_get_full_name},
+            {"get_namespace", l_patch_get_namespace},
+            {"get_fields", l_patch_get_fields},
+            {"get_methods", l_patch_get_methods},
+            {"get_properties", l_patch_get_properties},
+            {"get_inner_types", l_patch_get_inner_types},
+            {"get_method_by_param_types", l_patch_get_method_by_param_types},
+            {"get_method_by_signature", l_patch_get_method_by_signature},
+            {"make_generic_type", l_patch_make_generic_type},
+            {"make_generic_instance", l_patch_make_generic_instance},
+            {"method_name", l_patch_method_name},
+            {"method_param_count", l_patch_method_param_count},
+            {"method_token", l_patch_method_token},
+            {"method_is_instance", l_patch_method_is_instance},
+            {"method_is_static", l_patch_method_is_static},
+            {"field_name", l_patch_field_name},
+            {"field_is_const", l_patch_field_is_const},
+            {"field_is_instance", l_patch_field_is_instance},
+            {"field_is_static", l_patch_field_is_static},
+            {"property_name", l_patch_property_name},
+            {"array_empty", l_patch_array_empty},
+            {"dictionary_create", l_patch_dictionary_create},
+            {"dictionary_add", l_patch_dictionary_add},
+            {"dictionary_set_value", l_patch_dictionary_set_value},
+            {"dictionary_get_value", l_patch_dictionary_get_value},
+            {"dictionary_length", l_patch_dictionary_length},
+            {"dictionary_remove", l_patch_dictionary_remove},
+            {"dictionary_clear", l_patch_dictionary_clear},
+            {"list_create", l_patch_list_create},
+            {"list_add", l_patch_list_add},
+            {"list_remove", l_patch_list_remove},
+            {"list_remove_at", l_patch_list_remove_at},
+            {"list_clear", l_patch_list_clear},
+            {"list_copy_from", l_patch_list_copy_from},
+            {"list_get_array", l_patch_list_get_array},
+            {"struct_arg", l_patch_struct_arg},
+            {"invoke_value_args", l_patch_invoke_value_args},
             {"field_pointer", l_patch_field_pointer},
             {"field_size", l_patch_field_size},
             {"mem_read", l_patch_mem_read},
