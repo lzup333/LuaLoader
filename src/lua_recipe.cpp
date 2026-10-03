@@ -37,13 +37,14 @@ namespace lualoader::lua_recipe {
         patch_handle_t f_num_recipes = nullptr;       // Recipe.numRecipes (static int)
 
         patch_handle_t m_item_set_defaults = nullptr; // Item.SetDefaults(int, ItemVariant)
+        patch_handle_t m_item_net_defaults = nullptr; // Item.netDefaults(int)
         patch_handle_t m_add_recipe = nullptr;        // Recipe.AddRecipe() (private static)
         patch_handle_t m_create_quick = nullptr;      // Recipe.CreateRequiredItemQuickLookups()
         patch_handle_t m_update_materials = nullptr;  // Recipe.UpdateWhichItemsAreMaterials()
         patch_handle_t m_update_list = nullptr;       // Recipe.UpdateRecipeList()
-        patch_handle_t m_setup_recipes = nullptr;     // Recipe.SetupRecipes()
+        patch_handle_t m_main_update = nullptr;       // Main.Update(float)（只用于触发首次 flush）
 
-        patch_hook_id_t g_setup_hook = PATCH_HOOK_INVALID_ID;
+        patch_hook_id_t g_update_hook = PATCH_HOOK_INVALID_ID;
         bool g_handles_ready = false;
         void (*g_queue_supplier)() = nullptr; // flush 前补队（JSON 物品等）
 
@@ -68,16 +69,22 @@ namespace lualoader::lua_recipe {
             return v;
         }
 
-        // Item.SetDefaults(id[, variant])：先套用物品默认值
+        // Item.SetDefaults(id[, variant])：改用 netDefaults(int)——
+        // 桌面端 invoke 无法编组 SetDefaults 的 ItemVariant 结构体参数
         bool item_set_defaults(patch_handle_t item, int id) {
             if (!item) return false;
+            if (patchlib_is_valid(m_item_net_defaults)) {
+                int iid = id;
+                void *args[1] = {&iid};
+                return patchlib_method_invoke_args(m_item_net_defaults, item, nullptr, args);
+            }
             if (patchlib_is_valid(m_item_set_defaults)) {
                 void *variant = nullptr; // ItemVariant 可选参数传 null（注意传指针的指针）
                 int iid = id;
                 void *args[2] = {&iid, &variant};
                 return patchlib_method_invoke_args(m_item_set_defaults, item, nullptr, args);
             }
-            LOG_WARN("[recipe] Item.SetDefaults 不可用");
+            LOG_WARN("[recipe] Item.SetDefaults/netDefaults 不可用");
             return false;
         }
 
@@ -93,10 +100,13 @@ namespace lualoader::lua_recipe {
             patch_handle_t create_item = nullptr;
             patchlib_field_get_value(f_create_item, cur, &create_item);
             if (!create_item) {
-                LOG_WARN("[recipe] createItem 为空");
+                LOG_WARN("[recipe] {} createItem 为空", r.result_id);
                 return false;
             }
-            if (!item_set_defaults(create_item, r.result_id)) return false;
+            if (!item_set_defaults(create_item, r.result_id)) {
+                LOG_WARN("[recipe] {} 产物 SetDefaults/netDefaults 失败", r.result_id);
+                return false;
+            }
             int stack = r.result_stack > 0 ? r.result_stack : 1;
             patchlib_field_set_value(f_item_stack, create_item, &stack);
 
@@ -104,7 +114,7 @@ namespace lualoader::lua_recipe {
             patch_handle_t req_arr = nullptr;
             patchlib_field_get_value(f_required_item, cur, &req_arr);
             if (!req_arr) {
-                LOG_WARN("[recipe] requiredItem 数组不可用");
+                LOG_WARN("[recipe] {} requiredItem 数组不可用", r.result_id);
                 return false;
             }
             const int n = static_cast<int>(r.ingredients.size());
@@ -126,7 +136,7 @@ namespace lualoader::lua_recipe {
             }
 
             if (!patchlib_method_invoke_args(m_add_recipe, nullptr, nullptr, nullptr)) {
-                LOG_WARN("[recipe] Recipe.AddRecipe 调用失败");
+                LOG_WARN("[recipe] {} Recipe.AddRecipe 调用失败", r.result_id);
                 return false;
             }
             return true;
@@ -153,6 +163,8 @@ namespace lualoader::lua_recipe {
             }
 
             f_item_stack = patchlib_type_get_field(g_item_class, "stack");
+            m_item_net_defaults =
+                patchlib_type_get_method_by_param_count(g_item_class, "netDefaults", 1);
             m_item_set_defaults =
                 patchlib_type_get_method_by_param_count(g_item_class, "SetDefaults", 2);
             if (!patchlib_is_valid(m_item_set_defaults))
@@ -172,12 +184,11 @@ namespace lualoader::lua_recipe {
                 g_recipe_class, "UpdateWhichItemsAreMaterials", 0);
             m_update_list =
                 patchlib_type_get_method_by_param_count(g_recipe_class, "UpdateRecipeList", 0);
-            m_setup_recipes =
-                patchlib_type_get_method_by_param_count(g_recipe_class, "SetupRecipes", 0);
 
             const bool ok = f_item_stack && f_current_recipe && f_create_item &&
                             f_required_item && f_required_tile && f_num_recipes &&
-                            patchlib_is_valid(m_item_set_defaults) &&
+                            (patchlib_is_valid(m_item_net_defaults) ||
+                             patchlib_is_valid(m_item_set_defaults)) &&
                             patchlib_is_valid(m_add_recipe);
             if (!ok) {
                 LOG_WARN("[recipe] Recipe 符号解析不完整，配方注册不可用");
@@ -193,8 +204,12 @@ namespace lualoader::lua_recipe {
             return get_static_int(f_num_recipes) > 0;
         }
 
+        void flush_queue();
+        void ensure_update_hook();
+
         void flush_queue() {
             if (!ensure_handles()) return;
+            ensure_update_hook(); // 兜底：若安装时未就绪，此处重试
             // 防重入：queue_recipe -> flush_queue -> supplier -> queue_recipe 会无限递归
             static bool g_flushing = false;
             if (g_flushing) return;
@@ -212,7 +227,7 @@ namespace lualoader::lua_recipe {
                 if (add_one(r))
                     ++ok_count;
                 else
-                    LOG_WARN("[recipe] 注册配方失败 (result=%d)", r.result_id);
+                    LOG_WARN("[recipe] 注册配方失败 (result={})", r.result_id);
             }
             g_queue.clear();
 
@@ -221,14 +236,64 @@ namespace lualoader::lua_recipe {
             LOG_INFO("[recipe] 已注册 {}/{} 条配方并刷新合成列表", ok_count, total);
         }
 
-        // Recipe.SetupRecipes postfix：游戏建完配方表后统一注册 Mod 配方
-        void setup_recipes_postfix(patch_handle_t instance, void **args, void *result,
-                                   const patch_method_signature_t *sig_info) {
+        // SetupRecipes 的 postfix 时机太早（内核数组扩容/ItemsByType 注册之前），
+        // 因此改在第一帧 Main.Update 前统一 flush：此时游戏与内核初始化都已完成。
+        bool g_update_flushed = false;
+        bool main_update_prefix(patch_handle_t instance, void **args,
+                                const patch_method_signature_t *sig_info, void *result) {
+            (void)instance;
+            (void)args;
+            (void)sig_info;
+            (void)result;
+            if (!g_update_flushed) {
+                g_update_flushed = true;
+                flush_queue();
+            }
+            return false; // 必须返回 false：继续调用原函数（true = 跳过原函数！）
+        }
+
+        // 桌面端 HookManager 对“只有 prefix 没有 postfix”的钩子不会回调 prefix
+        // （实测 Main.Update 纯 prefix 时回调从不触发），因此补一个空 postfix。
+        void main_update_postfix(patch_handle_t instance, void **args, void *result,
+                                 const patch_method_signature_t *sig_info) {
             (void)instance;
             (void)args;
             (void)result;
             (void)sig_info;
-            flush_queue();
+        }
+
+        // 惰性安装 Main.Update 前缀钩子（Mod 加载极早时 il2cpp 类可能还没就绪，需要重试）
+        void ensure_update_hook() {
+            if (g_update_hook != PATCH_HOOK_INVALID_ID)
+                return;
+            if (!ensure_handles())
+                return;
+            patch_handle_t main_cls = patchlib_type_get_type("Terraria", "Main");
+            if (patchlib_is_valid(main_cls)) {
+                m_main_update =
+                    patchlib_type_get_method_by_param_count(main_cls, "Update", 1);
+                patchlib_free(main_cls);
+            }
+            if (!patchlib_is_valid(m_main_update)) {
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    LOG_WARN("[recipe] 找不到 Terraria.Main:Update，配方将在 mod.recipe.add 时直接注册");
+                }
+                return;
+            }
+            g_update_hook =
+                patchlib_install_prepost_hook(m_main_update, main_update_prefix,
+                                              main_update_postfix);
+            if (g_update_hook == PATCH_HOOK_INVALID_ID) {
+                static bool warned2 = false;
+                if (!warned2) {
+                    warned2 = true;
+                    LOG_WARN("[recipe] Main.Update 钩子安装失败，配方将在 mod.recipe.add 时直接注册");
+                }
+            } else {
+                LOG_INFO("[recipe] Main.Update 钩子已安装（首帧统一注册配方）");
+            }
         }
 
         // ---- Lua 绑定 ----
@@ -300,14 +365,9 @@ namespace lualoader::lua_recipe {
     void register_api(lua_State *L, lua_mod_handle_t *handle) {
         (void)handle;
 
-        // 全局只挂一次 SetupRecipes postfix
-        if (g_setup_hook == PATCH_HOOK_INVALID_ID && ensure_handles() &&
-            patchlib_is_valid(m_setup_recipes)) {
-            g_setup_hook =
-                patchlib_install_prepost_hook(m_setup_recipes, nullptr, setup_recipes_postfix);
-            if (g_setup_hook == PATCH_HOOK_INVALID_ID)
-                LOG_WARN("[recipe] SetupRecipes 钩子安装失败，配方将在 mod.recipe.add 时直接注册");
-        }
+        // 全局只挂一次 Main.Update 前缀（第一帧统一 flush 配方队列）
+        if (g_update_hook == PATCH_HOOK_INVALID_ID)
+            ensure_update_hook();
 
         lua_createtable(L, 0, 3);
         lua_pushcfunction(L, l_recipe_add);
@@ -321,6 +381,7 @@ namespace lualoader::lua_recipe {
     bool queue_recipe(int result_id, int result_stack,
                       const std::vector<std::pair<int, int>> &ingredients, int tile) {
         if (result_id <= 0 || ingredients.empty()) return false;
+        ensure_update_hook();
         QueuedRecipe r;
         r.result_id = result_id;
         r.result_stack = result_stack > 0 ? result_stack : 1;
