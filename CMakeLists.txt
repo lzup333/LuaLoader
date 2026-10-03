@@ -63,6 +63,8 @@ if (MINGW)
     # 静态链接 MinGW 运行库，避免目标机缺少
     # libstdc++-6.dll / libgcc_s_*.dll / libwinpthread-1.dll 导致加载失败
     target_link_options(LuaLoader PRIVATE -static)
+    # 导出全部符号（lua_* / luaL_* / patchlib_*），供原生模块 DLL 解析
+    target_link_options(LuaLoader PRIVATE -Wl,--export-all-symbols)
 endif()
 
 

@@ -25,6 +25,12 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
 extern "C" {
 #include "lua.h"
 #include "lauxlib.h"
@@ -52,9 +58,19 @@ namespace lualoader::lua_engine {
         luaL_openlibs(L);
     }
 
-    /// 配置 package：把 Mod 目录加入 package.path（保留系统默认路径），
-    /// 同时禁用 C 原生模块加载（清空 cpath 并移除 loadlib），避免混入 .so 原生代码。
-    static void configure_package(lua_State *L, const std::string &mod_dir) {
+    /// 找到 Mod 的原生库目录列表（按平台_架构，其次平台，再次 mod 根）
+    static std::vector<std::string> native_dirs(const std::string &mod_dir,
+                                                const std::string &private_dir,
+                                                const std::string &platform,
+                                                const std::string &arch);
+
+    /// 配置 package：把 Mod 目录加入 package.path（保留系统默认路径）。
+    /// 同时开放 C 原生模块：把 Mod 的平台原生目录加入 package.cpath，并保留 loadlib。
+    /// 兼容说明：纯 Lua Mod 不受影响；原生模块为可选，仅当 Mod 自带对应平台 .so/.dll 时才会被加载。
+    static void configure_package(lua_State *L, const std::string &mod_dir,
+                                  const std::string &private_dir,
+                                  const std::string &platform,
+                                  const std::string &arch) {
         lua_getglobal(L, "package");
         if (!lua_istable(L, -1)) {
             lua_pop(L, 1);
@@ -70,12 +86,74 @@ namespace lualoader::lua_engine {
         lua_pushstring(L, pattern.c_str());
         lua_setfield(L, -2, "path");
 
-        // 禁用原生 C 模块加载
-        lua_pushliteral(L, "");
-        lua_setfield(L, -2, "cpath");
-        lua_pushnil(L);
-        lua_setfield(L, -2, "loadlib");
+        // 开放原生模块：Mod 平台原生目录优先
+        std::string native_pattern;
+        for (const auto &dir: native_dirs(mod_dir, private_dir, platform, arch)) {
+#ifdef _WIN32
+            native_pattern += dir + "/?.dll;";
+#else
+            native_pattern += dir + "/?.so;";
+#endif
+        }
+        lua_getfield(L, -1, "cpath");
+        const char *default_cpath = lua_tostring(L, -1);
         lua_pop(L, 1);
+        const std::string cpath = native_pattern + (default_cpath ? default_cpath : "");
+        lua_pushstring(L, cpath.c_str());
+        lua_setfield(L, -2, "cpath");
+        // 保留 package.loadlib（open_all_libs 已提供，这里不再置空）
+        lua_pop(L, 1);
+    }
+
+    /// 找到 Mod 的原生库目录列表（按平台_架构，其次平台，再次 mod 根）
+    static std::vector<std::string> native_dirs(const std::string &mod_dir,
+                                                const std::string &private_dir,
+                                                const std::string &platform,
+                                                const std::string &arch) {
+        std::vector<std::string> dirs;
+        const std::string pa = platform + "_" + arch;
+        for (const std::string &base: {private_dir, mod_dir}) {
+            if (base.empty()) continue;
+            dirs.push_back(base + "/native/" + pa);
+            dirs.push_back(base + "/native/" + platform);
+            dirs.push_back(base + "/lib/native/" + pa);
+            dirs.push_back(base + "/lib/native/" + platform);
+        }
+        return dirs;
+    }
+
+    /// 预加载原生库（RTLD_GLOBAL）：让模块能解析到 loader 进程里导出的内核 API / Lua API。
+    /// 只加载当前平台目录下存在的库；纯 Lua Mod 不受影响。
+    static void preload_native_libs(const std::string &mod_dir, const std::string &private_dir,
+                                    const std::string &platform, const std::string &arch,
+                                    const std::string &mod_id) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        for (const auto &dir: native_dirs(mod_dir, private_dir, platform, arch)) {
+            if (!fs::is_directory(dir, ec)) continue;
+            for (const auto &entry: fs::directory_iterator(dir, ec)) {
+                if (!entry.is_regular_file()) continue;
+                const std::string ext = entry.path().extension().string();
+#ifdef _WIN32
+                if (ext != ".dll") continue;
+#else
+                if (ext != ".so") continue;
+#endif
+#ifdef _WIN32
+                void *h = (void *) LoadLibraryA(entry.path().string().c_str());
+                if (!h) LOG_WARN("[mod {}] LoadLibrary failed: {}", mod_id, entry.path().string());
+                else LOG_INFO("[mod {}] preloaded native module: {}", mod_id, entry.path().filename().string());
+#else
+                void *h = dlopen(entry.path().c_str(), RTLD_NOW | RTLD_GLOBAL);
+                if (!h) {
+                    const char *e = dlerror();
+                    LOG_WARN("[mod {}] dlopen failed: {} ({})", mod_id, entry.path().string(), e ? e : "?");
+                } else {
+                    LOG_INFO("[mod {}] preloaded native module: {}", mod_id, entry.path().filename().string());
+                }
+#endif
+            }
+        }
     }
 
     static bool run_file(lua_State *L, const std::string &path, std::string &err) {
@@ -273,7 +351,8 @@ namespace lualoader::lua_engine {
         handle->L = L;
 
         open_all_libs(L);
-        configure_package(L, handle->mod_dir);
+        configure_package(L, handle->mod_dir, private_dir, handle->platform, handle->arch);
+        preload_native_libs(handle->mod_dir, private_dir, handle->platform, handle->arch, handle->mod_id);
         lua_api::register_api(L, handle);
 
         LOG_INFO("Running Lua entry: {}", entry_path);

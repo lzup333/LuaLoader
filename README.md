@@ -373,17 +373,64 @@ LuaLoader 有一个隐藏配置文件，放在**加载器自己的私有目录**
 3. `<配置文件目录>/<main>`
 4. `<配置文件目录>/Resources/lib/<main>`
 
+## 原生模块（C/C++ 扩展）
+
+LuaLoader **支持加载 C/C++ 原生模块**（`.so` / `.dll`），用于性能敏感或 Lua 不好实现的场景。
+
+**目录约定**（随 Mod 包一起分发，按平台放置）：
+
+```
+Resources/native/<平台>_<架构>/<模块名>.so     # 如 linux_x64 / android_arm64 / windows_x64
+Resources/native/<平台>/<模块名>.so            # 次选（不区分架构）
+```
+
+部署后对应 `<私有目录>/native/<平台>_<架构>/` 与 `<私有目录>/lib/native/...`，加载器会自动把它加入
+`package.cpath` 并以 `RTLD_GLOBAL` 预加载。
+
+**在 Lua 里使用**：就是普通 C 模块，`require` 即可：
+
+```lua
+local mymod = require("mymod")   -- 加载 <模块名>.so，调用 luaopen_mymod
+```
+
+**在 C 侧能拿到什么**：
+
+- **Lua C API**：LuaLoader 导出了 `lua_*` / `luaL_*`，模块按标准 `luaopen_<name>(lua_State*)` 写即可
+- **内核 API**：LuaLoader 导出了 `patchlib_*` 函数指针（与 `includes/tefkernel/patchlib/*.h` 声明一致），
+  模块直接 `#include` 这些头文件（声明模式）即可调用，例如：
+
+```c
+#include "patchlib/type.h"
+#include "patchlib/field.h"
+
+int luaopen_mymod(lua_State *L) {
+    patch_handle_t item = patchlib_type_get_type("Terraria", "Item");
+    patch_handle_t f    = patchlib_type_get_field(item, "useTime");
+    (void)f;
+    lua_pushinteger(L, 1);
+    return 1;
+}
+```
+
+> 注意：`patchlib_*` 是**函数指针变量**（由内核在启动时填充）。内核未提供的能力其指针为 `NULL`，
+> 调用前请判空。这也是官方（正式版）内核与开发版内核能力差异所在。
+
+**安全提示**：原生模块等同于在游戏进程里执行任意原生代码，风险高于纯 Lua。请只安装信任来源的
+含原生模块的 Mod；安装前建议检查包内 `native/` 目录。
+
+
+
 ## Lua 能力与安全提示
 
 - LuaLoader **打开 Lua 5.4 的全部标准库**：`base`、`table`、`string`、`math`、`utf8`、
   `coroutine`、`io`、`os`、`debug`、`package`，Mod 可以使用完整 Lua 代码
   （`io.open` / `os.*` / `debug.*` / `dofile` / `loadfile` / `load` 等均可）。
 - `package.path` 会包含 Mod 目录，`require` 可加载 Mod 自带的 Lua 模块。
-- **仍禁用原生 C 模块**：`package.cpath` 被清空、`loadlib` 被移除，Mod 不能 `require` 系统里的
-  `.so`，避免混入任意原生代码。也就是说放开的只是 Lua 层能力。
+- **原生 C 模块已开放**：Mod 可自带 `native/<平台>_<架构>/*.so`（加载器会加入 `package.cpath` 并预加载），
+  详见上文「原生模块（C/C++ 扩展）」。这就是说，Mod 能执行原生代码，请只安装信任来源的 Mod。
 
-> ⚠️ **安全提示**：这意味着 Mod 脚本可以读写文件、执行系统命令等，请只安装你信任的 Mod。
-> 安装前建议先**手动打开 Mod 压缩包查看其中的 `.lua` 脚本**（也可以把脚本丢给 AI 帮你分析
+> ⚠️ **安全提示**：这意味着 Mod 脚本可以读写文件、执行系统命令、加载原生模块。
+> 安装前建议先**手动打开 Mod 压缩包查看其中的 `.lua` 脚本与 `native/` 目录**（也可以丢给 AI 帮你分析
 > 它做了什么），确认无误再启用。
 
 ## 许可证
