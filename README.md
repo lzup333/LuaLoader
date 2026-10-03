@@ -418,6 +418,8 @@ int luaopen_mymod(lua_State *L) {
 **安全提示**：原生模块等同于在游戏进程里执行任意原生代码，风险高于纯 Lua。请只安装信任来源的
 含原生模块的 Mod；安装前建议检查包内 `native/` 目录。
 
+> 完整指南（目录约定 / 编译 / Windows import lib / 排查）见 [`doc/native.md`](doc/native.md)。
+
 
 
 ## Lua 能力与安全提示
