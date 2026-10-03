@@ -152,6 +152,30 @@ local method2 = mod.patch.get_method(player, "Foo")             -- 单参时可�
 | `type_name(handle)` | 类型名 |
 | `get_parent(type)` | 父类型 |
 | `get_inner_type(parent, name)` | 嵌套类型（如 `ItemID.Sets` / `PrefixLegacy.ItemSets`，见下） |
+| `get_full_name(type)` | 完整名（命名空间 + 类名） |
+| `get_namespace(type)` | 命名空间 |
+| `get_fields(type[, 含父类])` | 字段句柄表 `{ field, ... }` |
+| `get_methods(type[, 含父类])` | 方法句柄表 `{ method, ... }` |
+| `get_properties(type[, 含父类])` | 属性句柄表 `{ property, ... }` |
+| `get_inner_types(type[, 含父类])` | 嵌套类型句柄表 |
+| `get_method_by_param_types(type, name, {type...})` | 按参数类型精确选重载 |
+| `get_method_by_signature(type, name, {type...}, {name...})` | 按参数类型+参数名精确选重载 |
+| `make_generic_type(generic_def, {type...})` | 实例化泛型类型（如 `Dictionary<,>`） |
+| `make_generic_instance(method, {type...})` | 实例化泛型方法 |
+| `method_name(m)` / `method_param_count(m)` / `method_token(m)` | 方法名 / 参数个数 / Token（可当缓存键） |
+| `method_is_instance(m)` / `method_is_static(m)` | 是否实例 / 静态方法 |
+| `field_name(f)` / `field_is_const(f)` / `field_is_instance(f)` / `field_is_static(f)` | 字段名 / 只读 / 实例 / 静态 |
+| `property_name(p)` | 属性名 |
+| `array_empty(arr)` | 清空数组 |
+| `dictionary_create(kt, vt[, cap])` | 创建 `Dictionary<,>`（kt/vt 为类型句柄） |
+| `dictionary_add/set_value(dict, k, kt, v, vt)` | 增 / 改键值对 |
+| `dictionary_get_value(dict, k, kt, vt)` | 按键取值 |
+| `dictionary_length(dict)` / `dictionary_remove(dict, k, kt)` / `dictionary_clear(dict)` | 长度 / 删除 / 清空 |
+| `list_create(type[, cap])` | 创建 `List<>` |
+| `list_add(list, v, vt)` / `list_remove(list, v, vt)` / `list_remove_at(list, i)` / `list_clear(list)` | 增删改查 |
+| `list_copy_from(list, array)` / `list_get_array(list)` | 从数组填充 / 取内部数组 |
+| `struct_arg({"float","float"}, {x, y})` | 打包按值结构体参数（如 `Vector2`，**仅 Android**） |
+| `invoke_value_args(method, instance, {arg...})` | 调用含按值结构体参数的方法（表项可用 `struct_arg`，**仅 Android**） |
 | `is_valid(handle)` | 句柄是否有效 |
 | `free(handle)` | 手动释放句柄（一般不用，见下） |
 
