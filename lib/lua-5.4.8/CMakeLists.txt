@@ -10,6 +10,13 @@ add_library(lua STATIC ${LUA_SOURCES})
 
 target_include_directories(lua PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
+# 开启动态库加载（loadlib / require 原生模块）
+if (WIN32)
+    target_compile_definitions(lua PRIVATE LUA_USE_WINDOWS)
+else()
+    target_compile_definitions(lua PRIVATE LUA_USE_DLOPEN)
+endif()
+
 # Lua uses POSIX/ANSI C only; keep it warning-quiet and self-contained.
 target_compile_options(lua PRIVATE
         $<$<C_COMPILER_ID:GNU,Clang>:-w>
