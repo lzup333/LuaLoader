@@ -42,50 +42,45 @@ print(hello.greet("world"))
 
 ### 3.1 推荐：通过 `ll_api_t` 注入的 API 表（全平台一致）
 
-Android 上 loader 由内核以 `RTLD_LOCAL` 从 memfd 加载，模块的 `lua_*` 未定义符号**无法**在
-ELF 全局作用域解析。因此推荐统一走 loader 注入的 API 表（与 TEFKernel 给 C mod 传 TPF 符号表同理）：
+Android 上 loader 以 `RTLD_LOCAL` 从 memfd 加载，模块的 `lua_*` 未定义符号无法在 ELF 全局作用域
+解析，所以统一用 loader 注入的 API 表（与 TEFKernel 给 C mod 传 TPF 符号表同理）：
 
 ```c
-#include "lualoader_mod.h"          /* 随 LuaLoader 仓库提供 */
+#include "lualoader_mod.h"
 
-typedef struct lua_State lua_State; /* 只为拿类型，不需要完整 lua.h */
+typedef struct lua_State lua_State;          /* 拿类型即可，不需要 lua.h */
 
 static const ll_api_t *LL = NULL;
+LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }   /* loader 注入 */
 
-/* loader 在 dlopen 后调用这个入口注入 API 表 */
-LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }
-
-static int l_greet(lua_State *L) {
+static int l_hello(lua_State *L) {
     if (!LL) return 0;
-    LL_CACHE(p_tolstring, lua_tolstring, const char *, (lua_State *, int, size_t *));
-    LL_CACHE(p_pushfstring, lua_pushfstring, const char *, (lua_State *, const char *, ...));
-    size_t n = 0;
-    const char *name = p_tolstring(L, 1, &n);
-    p_pushfstring(L, "hello, %s", name ? name : "world");
+    LL_CACHE(p_pushstring, lua_pushstring, void, (lua_State *, const char *));
+    p_pushstring(L, "hello");
     return 1;
 }
 
-int luaopen_hello(lua_State *L) {
+int luaopen_hello(lua_State *L) {            /* require("hello") */
     if (!LL) return 0;
-    LL_CACHE(p_createtable, lua_createtable, void, (lua_State *, int, int));
-    LL_CACHE(p_pushcclosure, lua_pushcclosure, void, (lua_State *, int (*)(lua_State *), int));
-    LL_CACHE(p_setfield, lua_setfield, void, (lua_State *, int, const char *));
-    p_createtable(L, 0, 1);
-    p_pushcclosure(L, l_greet, 0);
-    p_setfield(L, -2, "greet");
+    LL_CACHE(p_pushcclosure, lua_pushcclosure, void, (lua_State *, lua_CFunction, int));
+    p_pushcclosure(L, l_hello, 0);
     return 1;
 }
 ```
 
+Lua 侧：
+
+```lua
+local hello = require("hello")
+print(hello())            -- hello
+```
+
 要点：
 
-- `ll_api_t { version, size, lookup(name) }`：`lookup` 可解析 **loader 自身导出的符号**
-  （`lua_*`、`luaL_*` 函数，以及 `patchlib_*` 函数指针变量），无需链接任何库
-- `LL_CACHE(变量, 符号名, 返回类型, (参数类型...))` 宏：首次调用时解析并缓存函数指针
-- 拿 `patchlib_*` 同理：`LL_CACHE(p_type_get_type, patchlib_type_get_type, void *, (const char *, const char *));`
-  loader 里的 `patchlib_*` 是函数指针变量，`lookup` 会先解引用，所以拿到即可直接调用
-
-> 若 loader 未注入（旧版 loader），`LL` 为 NULL。模块里应 `if (!LL) return 0;` 优雅失败，不要崩溃。
+- `ll_api_t { version, size, lookup(name) }`，`lookup` 可解析 loader 导出的 `lua_*` / `luaL_*` 函数，
+  以及 `patchlib_*` 函数指针变量（自动解引用，直接返回可调用的函数指针）
+- `LL_CACHE(变量, 符号名, 返回类型, (参数类型...))`：首次调用时解析并缓存
+- loader 未注入（旧版）时 `LL` 为 NULL，模块应 `if (!LL) return 0;` 优雅失败
 
 ### 3.2 直接 `extern`（仅 Linux/桌面可用）
 
@@ -112,91 +107,36 @@ int luaopen_hello(lua_State *L) {
 
 不确定某个名字是函数还是宏时，查 `lib/lua-5.4.8/src/lua.h` 里的 `LUA_API` / `#define`。
 
-## 4. 完整示例
+## 4. 编译与打包
 
-```c
-/* mymod.c —— 编译见下方命令；不需要 <lua.h> */
-#include "lualoader_mod.h"
-#include <stddef.h>
-
-typedef struct lua_State lua_State;
-
-static const ll_api_t *LL = NULL;
-LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }   /* loader 注入 */
-
-/* add(a, b) -> number */
-static int l_add(lua_State *L) {
-    if (!LL) return 0;
-    LL_CACHE(p_tointeger, lua_tointegerx, long long, (lua_State *, int, int *));
-    LL_CACHE(p_pushinteger, lua_pushinteger, void, (lua_State *, long long));
-    if (!p_tointeger || !p_pushinteger) return 0;
-    int isnum = 0;
-    long long a = p_tointeger(L, 1, &isnum);
-    long long b = p_tointeger(L, 2, &isnum);
-    p_pushinteger(L, a + b);
-    return 1;
-}
-
-/* my_player() -> number（用内核 API 读 Main.myPlayer） */
-static int l_my_player(lua_State *L) {
-    if (!LL) return 0;
-    LL_CACHE(p_type_get_type, patchlib_type_get_type, void *, (const char *, const char *));
-    LL_CACHE(p_type_get_field, patchlib_type_get_field, void *, (void *, const char *));
-    LL_CACHE(p_field_get_value, patchlib_field_get_value, void, (void *, void *, void *));
-    LL_CACHE(p_pushinteger, lua_pushinteger, void, (lua_State *, long long));
-    if (!p_type_get_type || !p_type_get_field || !p_field_get_value || !p_pushinteger)
-        return 0;
-
-    void *main_cls = p_type_get_type("Terraria", "Main");
-    void *f = main_cls ? p_type_get_field(main_cls, "myPlayer") : NULL;
-    if (!f) return 0;
-    int idx = -1;
-    p_field_get_value(f, NULL, &idx);          /* 静态字段，实例传 NULL */
-    p_pushinteger(L, idx);
-    return 1;
-}
-
-int luaopen_mymod(lua_State *L) {
-    if (!LL) return 0;
-    LL_CACHE(p_createtable, lua_createtable, void, (lua_State *, int, int));
-    LL_CACHE(p_pushcclosure, lua_pushcclosure, void, (lua_State *, int (*)(lua_State *), int));
-    LL_CACHE(p_setfield, lua_setfield, void, (lua_State *, int, const char *));
-    if (!p_createtable || !p_pushcclosure || !p_setfield) return 0;
-
-    p_createtable(L, 0, 2);
-    p_pushcclosure(L, l_add, 0);
-    p_setfield(L, -2, "add");
-    p_pushcclosure(L, l_my_player, 0);
-    p_setfield(L, -2, "my_player");
-    return 1;
-}
-```
-
-编译（Linux / Android / Windows）：
+把 3.1 的示例存成 `hello.c`：
 
 ```bash
 INC=-I<LuaLoader>/includes
 
 # Linux x64
-clang -O2 -fPIC -shared -o mymod.so mymod.c $INC
+clang -O2 -fPIC -shared -o hello.so hello.c $INC
 
 # Android arm64
 $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang \
-  -O2 -fPIC -shared -o mymod.so mymod.c $INC
+  -O2 -fPIC -shared -o hello.so hello.c $INC
 
 # Windows x64（PE 需 import lib，仓库 sdk/ 下提供）
-x86_64-w64-mingw32-gcc -O2 -shared -o mymod.dll mymod.c $INC \
+x86_64-w64-mingw32-gcc -O2 -shared -o hello.dll hello.c $INC \
   <LuaLoader>/sdk/windows_x64/libloader.windows.x64.dll.a
 ```
 
-放置与打包：
+放成标准的 Mod 包再压缩即可：
 
 ```
 MyMod/
 ├── Info.json / luamod.json / Manifest.json
 └── Resources/
-    ├── lib/main.lua                  -- local m = require("mymod")
-    └── native/<平台>_<架构>/mymod.so  -- 按平台放置
+    ├── lib/main.lua                  -- local hello = require("hello")
+    └── native/<平台>_<架构>/hello.so
+```
+
+```bash
 cd MyMod && zip -qrX ../MyMod.zip .
 ```
 
