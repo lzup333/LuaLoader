@@ -40,27 +40,66 @@ namespace lualoader::mod_api {
             }
             const auto *base = static_cast<const unsigned char *>(info.dli_fbase);
 
-            // 自身装载范围：直接用自己的 program headers 计算（不依赖 dl_iterate_phdr 匹配，
-            // 后者在 memfd/自定义加载等场景可能匹配不到，导致边界校验全部失败）。
-            ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
+            // 装载基址 bias：优先用 dl_iterate_phdr 的 dlpi_addr（匹配基址落在其 PT_LOAD 范围内），
+            // 匹配不到再退回 dli_fbase。用于兼容两种 DT_* 语义（已重定位 / 未重定位）。
+            ElfW(Addr) bias = reinterpret_cast<ElfW(Addr)>(base);
+            {
+                struct Ctx {
+                    const void *base;
+                    ElfW(Addr) bias;
+                    bool found;
+                } ctx{info.dli_fbase, reinterpret_cast<ElfW(Addr)>(base), false};
+                dl_iterate_phdr([](struct dl_phdr_info *pi, size_t, void *data) -> int {
+                    auto *c = static_cast<Ctx *>(data);
+                    ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
+                    for (int i = 0; i < pi->dlpi_phnum; ++i) {
+                        const auto &ph = pi->dlpi_phdr[i];
+                        if (ph.p_type != PT_LOAD) continue;
+                        const ElfW(Addr) s = pi->dlpi_addr + ph.p_vaddr;
+                        const ElfW(Addr) e = s + ph.p_memsz;
+                        if (s < lo) lo = s;
+                        if (e > hi) hi = e;
+                    }
+                    const auto b = reinterpret_cast<ElfW(Addr)>(c->base);
+                    if (b >= lo && b < hi) {
+                        c->bias = pi->dlpi_addr;
+                        c->found = true;
+                        return 1;
+                    }
+                    return 0;
+                }, &ctx);
+                if (ctx.found) bias = ctx.bias;
+            }
+
+            // 自身装载范围：vaddr 范围取自自身 program headers，绝对地址 = bias + vaddr
+            ElfW(Addr) lo_v = ~static_cast<ElfW(Addr)>(0), hi_v = 0;
             {
                 const auto *eh0 = reinterpret_cast<const ElfW(Ehdr) *>(base);
                 const auto *ph0 = reinterpret_cast<const ElfW(Phdr) *>(base + eh0->e_phoff);
                 for (int i = 0; i < eh0->e_phnum; ++i) {
                     if (ph0[i].p_type != PT_LOAD) continue;
-                    const ElfW(Addr) s = reinterpret_cast<ElfW(Addr)>(base) + ph0[i].p_vaddr;
-                    const ElfW(Addr) e = s + ph0[i].p_memsz;
-                    if (s < lo) lo = s;
-                    if (e > hi) hi = e;
+                    if (ph0[i].p_vaddr < lo_v) lo_v = ph0[i].p_vaddr;
+                    const ElfW(Addr) e = ph0[i].p_vaddr + ph0[i].p_memsz;
+                    if (e > hi_v) hi_v = e;
                 }
             }
-            const ElfW(Addr) self_start = lo;
-            const ElfW(Addr) self_end = hi;
+            const ElfW(Addr) self_start = bias + lo_v;
+            const ElfW(Addr) self_end = bias + hi_v;
 
             const auto in_range = [&](const void *p, size_t n) {
                 if (!p || n == 0 || self_end <= self_start) return false;
                 const auto a = reinterpret_cast<ElfW(Addr)>(p);
                 return a >= self_start && a + n <= self_end && a + n > a;
+            };
+
+            // 解析地址型 DT_*：兼容“已重定位（绝对）”与“未重定位（相对 bias）”两种语义
+            const auto resolve = [&](ElfW(Addr) v, size_t n) -> const void * {
+                if (v == 0) return nullptr;
+                const void *p = reinterpret_cast<const void *>(v);
+                if (in_range(p, n)) return p;
+                const void *p2 = reinterpret_cast<const void *>(v + bias);
+                if (in_range(p2, n)) return p2;
+                return nullptr;
             };
 
             if (!in_range(base, sizeof(ElfW(Ehdr)))) {
@@ -88,11 +127,19 @@ namespace lualoader::mod_api {
 
             for (const ElfW(Dyn) *d = dyn; d->d_tag != DT_NULL; ++d) {
                 switch (d->d_tag) {
-                    case DT_SYMTAB: symtab = reinterpret_cast<const ElfW(Sym) *>(d->d_un.d_ptr); break;
-                    case DT_STRTAB: strtab = reinterpret_cast<const char *>(d->d_un.d_ptr); break;
+                    case DT_SYMTAB:
+                        symtab = static_cast<const ElfW(Sym) *>(resolve(d->d_un.d_ptr, sizeof(ElfW(Sym))));
+                        break;
+                    case DT_STRTAB:
+                        strtab = static_cast<const char *>(resolve(d->d_un.d_ptr, 1));
+                        break;
                     case DT_SYMENT: syment = d->d_un.d_val; break;
-                    case DT_HASH: hashtab = reinterpret_cast<const uint32_t *>(d->d_un.d_ptr); break;
-                    case DT_GNU_HASH: gnu_hash = reinterpret_cast<const uint32_t *>(d->d_un.d_ptr); break;
+                    case DT_HASH:
+                        hashtab = static_cast<const uint32_t *>(resolve(d->d_un.d_ptr, 2 * sizeof(uint32_t)));
+                        break;
+                    case DT_GNU_HASH:
+                        gnu_hash = static_cast<const uint32_t *>(resolve(d->d_un.d_ptr, 4 * sizeof(uint32_t)));
+                        break;
                     default: break;
                 }
             }
@@ -158,7 +205,7 @@ namespace lualoader::mod_api {
                     !in_range(name, 1))
                     continue;
                 if (*name == '\0') continue;
-                void *addr = const_cast<unsigned char *>(base) + s.st_value;
+                void *addr = reinterpret_cast<void *>(bias + s.st_value);
                 if (type == STT_OBJECT) {
                     // patchlib_* 在 loader 中是“函数指针变量”，其值才是目标函数；
                     // 解析时直接取值，保证 lookup 返回可直接调用的指针。
@@ -170,7 +217,9 @@ namespace lualoader::mod_api {
                 }
                 g_symbols.emplace(name, addr);
             }
-            LOG_INFO("[native] 已建立自身符号表: {} 个符号", g_symbols.size());
+            LOG_INFO("[native] 已建立自身符号表: {} 个符号 (bias=0x{:x}, hash={})",
+                     g_symbols.size(), static_cast<unsigned long long>(bias),
+                     hashtab ? "DT_HASH" : "DT_GNU_HASH");
 #endif
         }
 
