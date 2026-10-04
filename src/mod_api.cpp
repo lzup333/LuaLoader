@@ -40,36 +40,27 @@ namespace lualoader::mod_api {
             }
             const auto *base = static_cast<const unsigned char *>(info.dli_fbase);
 
-            // 通过 dl_iterate_phdr 找到自身装载范围，用于边界校验
-            struct FindCtx {
-                const void *base;
-                ElfW(Addr) start;
-                ElfW(Addr) end;
-                bool found;
-            } ctx{info.dli_fbase, 0, 0, false};
-
-            dl_iterate_phdr([](struct dl_phdr_info *pi, size_t, void *data) -> int {
-                auto *c = static_cast<FindCtx *>(data);
-                if (reinterpret_cast<const void *>(pi->dlpi_addr) != c->base) return 0;
-                ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
-                for (int i = 0; i < pi->dlpi_phnum; ++i) {
-                    const auto &ph = pi->dlpi_phdr[i];
-                    if (ph.p_type != PT_LOAD) continue;
-                    const ElfW(Addr) s = pi->dlpi_addr + ph.p_vaddr;
-                    const ElfW(Addr) e = s + ph.p_memsz;
+            // 自身装载范围：直接用自己的 program headers 计算（不依赖 dl_iterate_phdr 匹配，
+            // 后者在 memfd/自定义加载等场景可能匹配不到，导致边界校验全部失败）。
+            ElfW(Addr) lo = ~static_cast<ElfW(Addr)>(0), hi = 0;
+            {
+                const auto *eh0 = reinterpret_cast<const ElfW(Ehdr) *>(base);
+                const auto *ph0 = reinterpret_cast<const ElfW(Phdr) *>(base + eh0->e_phoff);
+                for (int i = 0; i < eh0->e_phnum; ++i) {
+                    if (ph0[i].p_type != PT_LOAD) continue;
+                    const ElfW(Addr) s = reinterpret_cast<ElfW(Addr)>(base) + ph0[i].p_vaddr;
+                    const ElfW(Addr) e = s + ph0[i].p_memsz;
                     if (s < lo) lo = s;
                     if (e > hi) hi = e;
                 }
-                c->start = lo;
-                c->end = hi;
-                c->found = true;
-                return 1; // 找到即停止
-            }, &ctx);
+            }
+            const ElfW(Addr) self_start = lo;
+            const ElfW(Addr) self_end = hi;
 
             const auto in_range = [&](const void *p, size_t n) {
-                if (!ctx.found || !p || n == 0) return false;
+                if (!p || n == 0 || self_end <= self_start) return false;
                 const auto a = reinterpret_cast<ElfW(Addr)>(p);
-                return a >= ctx.start && a + n <= ctx.end && a + n > a; // 溢出保护
+                return a >= self_start && a + n <= self_end && a + n > a;
             };
 
             if (!in_range(base, sizeof(ElfW(Ehdr)))) {
@@ -138,7 +129,8 @@ namespace lualoader::mod_api {
                 }
                 count = idx + 1;
             } else {
-                LOG_WARN("[native] 无可用 hash 表，跳过符号表");
+                LOG_WARN("[native] 无可用 hash 表（DT_HASH={} DT_GNU_HASH={}），跳过符号表",
+                          hashtab ? 1 : 0, gnu_hash ? 1 : 0);
                 return;
             }
 

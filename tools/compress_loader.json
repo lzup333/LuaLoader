@@ -1,0 +1,8 @@
+{
+  "libloader.android.arm64.so": { "mode": "lz4hc", "level": 9 },
+  "libloader.android.arm.so":   { "mode": "lz4hc", "level": 9 },
+  "libloader.linux.x64.so":     { "mode": "lz4hc", "level": 9 },
+  "libloader.linux.x86.so":     { "mode": "lz4hc", "level": 9 },
+  "libloader.windows.x64.dll":  { "mode": "lz4hc", "level": 9 },
+  "libloader.windows.x86.dll":  { "mode": "lz4hc", "level": 9 }
+}
