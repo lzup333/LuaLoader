@@ -123,7 +123,8 @@ mod.write_file("config.txt", "hello")          -- 成功返回 true
 mod.file_exists("config.txt")                  -- true / false
 ```
 
-> Mod 可使用完整的 Lua 标准库（`io` / `os` / `debug` 等），但仍不能加载原生 C 模块（`.so`）。
+> Mod 可使用完整的 Lua 标准库（`io` / `os` / `debug` 等），并可自带 C/C++ 原生模块
+> （`Resources/native/<平台>_<架构>/`，详见 [`native.md`](native.md)）。
 
 ---
 
@@ -168,7 +169,8 @@ local method2 = mod.patch.get_method(player, "Foo")             -- 单参时可�
 | `property_name(p)` | 属性名 |
 | `array_empty(arr)` | 清空数组 |
 | `dictionary_create(kt, vt[, cap])` | 创建 `Dictionary<,>`（kt/vt 为类型句柄） |
-| `dictionary_add/set_value(dict, k, kt, v, vt)` | 增 / 改键值对 |
+| `dictionary_add(dict, k, kt, v, vt)` | 新增键值对 |
+| `dictionary_set_value(dict, k, kt, v, vt)` | 修改键值对 |
 | `dictionary_get_value(dict, k, kt, vt)` | 按键取值 |
 | `dictionary_length(dict)` / `dictionary_remove(dict, k, kt)` / `dictionary_clear(dict)` | 长度 / 删除 / 清空 |
 | `list_create(type[, cap])` | 创建 `List<>` |

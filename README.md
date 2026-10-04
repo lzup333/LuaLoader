@@ -393,30 +393,26 @@ Resources/native/<平台>/<模块名>.so            # 次选（不区分架构�
 local mymod = require("mymod")   -- 加载 <模块名>.so，调用 luaopen_mymod
 ```
 
-**在 C 侧能拿到什么**：
-
-- **Lua C API**：LuaLoader 导出了 `lua_*` / `luaL_*`，模块按标准 `luaopen_<name>(lua_State*)` 写即可
-- **内核 API**：LuaLoader 导出了 `patchlib_*` 函数指针（与 `includes/tefkernel/patchlib/*.h` 声明一致），
-  模块直接 `#include` 这些头文件（声明模式）即可调用，例如：
+**在 C 侧怎么取 API**：推荐用 loader 注入的 API 表（全平台一致）：
 
 ```c
-#include "patchlib/type.h"
-#include "patchlib/field.h"
+#include "lualoader_mod.h"
+
+typedef struct lua_State lua_State;      /* 拿类型即可 */
+static const ll_api_t *LL = NULL;
+LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }  /* loader 注入 */
 
 int luaopen_mymod(lua_State *L) {
-    patch_handle_t item = patchlib_type_get_type("Terraria", "Item");
-    patch_handle_t f    = patchlib_type_get_field(item, "useTime");
-    (void)f;
-    lua_pushinteger(L, 1);
+    if (!LL) return 0;                                        /* 旧 loader 未注入则优雅失败 */
+    LL_CACHE(p_pushinteger, lua_pushinteger, void, (lua_State *, long long));
+    p_pushinteger(L, 1);
     return 1;
 }
 ```
 
-> 注意：`patchlib_*` 是**函数指针变量**（由内核在启动时填充）。内核未提供的能力其指针为 `NULL`，
-> 调用前请判空。这也是官方（正式版）内核与开发版内核能力差异所在。
-
-**安全提示**：原生模块等同于在游戏进程里执行任意原生代码，风险高于纯 Lua。请只安装信任来源的
-含原生模块的 Mod；安装前建议检查包内 `native/` 目录。
+- `LL->lookup("名字")` 可解析 loader 自身导出的任意符号：`lua_*`、`luaL_*`、`patchlib_*` …
+- Android 上模块库会先复制到应用私有目录再加载（绕开 linker namespace 限制）
+- 只在 Linux/桌面，才可以省掉 API 表、直接 `extern` 引用 `lua_*` / `patchlib_*`
 
 > 完整指南（目录约定 / 编译 / Windows import lib / 排查）见 [`doc/native.md`](doc/native.md)。
 

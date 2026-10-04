@@ -252,6 +252,35 @@ ends up at `<private_dir>/lib/main.lua`. The loader looks for it in this order:
 3. `<config dir>/<main>`
 4. `<config dir>/Resources/lib/<main>`
 
+## Native modules (C/C++ extensions)
+
+A mod may ship native libraries under `Resources/native/<platform>_<arch>/`; they are added to
+`package.cpath` and preloaded by the loader.
+
+Recommended way to call Lua/kernel APIs: use the injected API table (works on all platforms):
+
+```c
+#include "lualoader_mod.h"
+typedef struct lua_State lua_State;
+static const ll_api_t *LL = NULL;
+LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }
+
+int luaopen_mymod(lua_State *L) {
+    if (!LL) return 0;
+    LL_CACHE(p_pushinteger, lua_pushinteger, void, (lua_State *, long long));
+    p_pushinteger(L, 42);
+    return 1;
+}
+```
+
+- `LL->lookup(name)` resolves any symbol exported by the loader (`lua_*`, `luaL_*`, `patchlib_*`).
+- On Android the library is copied to the app-private directory before `dlopen` (linker namespace limits).
+- Windows needs the import lib from `sdk/windows_<arch>/` when linking.
+- Full guide: [`doc/native.md`](doc/native.md).
+
+> Security: native modules run arbitrary native code in the game process. Only install mods from
+> sources you trust.
+
 ## License
 
 LuaLoader itself is **AGPL-3.0-or-later** (see `LICENSE`). `includes/tefkernel/` and `mod-api/` come
