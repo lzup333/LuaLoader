@@ -14,12 +14,12 @@ LuaLoader 是 TEFKernel 的一个 ModLoader：内核负责注入和底层 hook�
 - 加载 Mod 目录里的 `main.lua`，跑脚本、管生命周期、装钩子；
 - 给脚本提供 `mod` 表：日志、私有目录读写、`mod.patch.*`（类型/字段/方法/钩子）；
 - 每个 Mod 用独立的 Lua 状态机，互不干扰；
-- 目前支持 **Android arm64 / arm** 和 **Linux x64**。
+- 目前支持 **Android arm64 / arm**、**Linux x64 / x86** 和 **Windows x64 / x86**。
 
 ## 目录结构
 
 ```
-TEFKernel-LuaLoader/
+LuaLoader/
 ├── CMakeLists.txt / CMakePresets.json   # 构建脚本和预设
 ├── Info.json / Manifest.json            # 加载器包信息
 ├── includes/                            # 头文件（core / logger / lua_engine / lua_api / tefkernel）
@@ -37,7 +37,7 @@ cmake --preset linux-x86_64-release
 cmake --build --preset linux-x86_64-release
 ```
 
-产物是 `libloader.<平台>.<架构>.so`（Linux x64 就是 `libloader.linux.x64.so`）。
+产物是 `libloader.<平台>.<架构>.so`（Windows 为 `.dll`；Linux x64 就是 `libloader.linux.x64.so`）。
 
 Android 需要 NDK：
 
@@ -68,10 +68,10 @@ my_lua_mod/
 { "main": "main.lua" }
 ```
 
-`main.lua` 长这样（这是自带的 ManaLock 示范，每帧把魔力补满）：
+`main.lua` 长这样（示例：每帧把玩家魔力补满）：
 
 ```lua
-mod.meta = { pkg_id = "lzup.lua.manalock", version = "1.0.0" }
+mod.meta = { pkg_id = "com.example.mymod", version = "1.0.0" }
 
 local stat_mana
 local stat_mana_max
@@ -93,7 +93,7 @@ end
 todo_list = { "setup" }
 ```
 
-加载器只跑 `main.lua`，其它 `.lua` 文件不会自动执行，需要的话用 `require("文件名")` 按需加载。
+加载器只跑入口脚本（默认 `main.lua`），其它 `.lua` 文件不会自动执行，需要的话用 `require("文件名")` 按需加载。
 
 ## `mod` 表
 
@@ -154,7 +154,7 @@ end
 ## 平台差异
 
 推荐用“任务清单”：把函数定义写在外面，清单里只写函数名，加载器按 `todo_list` →
-`todo_list_<平台>` → `todo_list_<平台>_<架构>` 的顺序执行与当前平台匹配的清单。
+`todo_list_<平台>` → `todo_list_<平台>_<架构>` 的顺序执行，只执行与当前平台匹配的清单。
 
 ```lua
 function setup()         mod.info("通用逻辑") end
@@ -192,7 +192,7 @@ todo_list_android = { "android_setup" }        -- 只在 Android 执行
 - `make_generic_type(def, {type...})` / `make_generic_instance(method, {type...})`
 - `method_name/param_count/token/is_instance/is_static`、`field_name/is_const/is_instance/is_static`、`property_name`
 - 容器：`dictionary_create/add/set_value/get_value/length/remove/clear`、`list_create/add/remove/remove_at/clear/copy_from/get_array`、`array_empty`
-- 按值结构体参数（仅 Android）：`struct_arg({"float","float"},{x,y})` + `invoke_value_args(method, instance, {arg...})`
+- 按值结构体参数（仅 Android）：`struct_arg({"float","float"},{x,y})` + `invoke_value_args(method[, instance], {arg...})`
 
 读写字段：
 
@@ -303,7 +303,7 @@ mod.patch.field_size(field)                            -- 字段字节大小（�
 mod.patch.invoke(method, [instance, ] ...)
 ```
 
-方法返回对象(引用类型)时得到 userdata，没有结果时得到 `nil`。
+方法返回对象(引用类型)时得到 userdata，返回值为 `void` 时得到 `nil`，调用失败时得到 `false`。
 
 钩子 `postfix` **默认忽略返回值**（与旧版一致，保证兼容）。若需要它覆盖原方法返回值，
 安装时加 `override_result = true`（或 `result = true`）：
@@ -406,9 +406,13 @@ int luaopen_mymod(lua_State *L) {
 }
 ```
 
-- `LL->lookup("名字")` 可解析 loader 自身导出的任意符号：`lua_*`、`luaL_*`、`patchlib_*` …
+- `LL->lookup("名字")` 可解析 loader 自身导出的符号：`lua_*`、`luaL_*` 函数，以及 `patchlib_*`
+  函数指针变量（`lookup` 会自动解引用，直接返回可调用的函数指针）
+- `lua.h` 里的宏（如 `lua_pushcfunction`、`lua_tointeger`、`lua_tostring`、`lua_newtable`、
+  `lua_pop`、`luaL_newlib`）没有导出符号，请改用底层真实函数（`lua_pushcclosure`、`lua_tointegerx`、
+  `lua_tolstring`、`lua_createtable`、`lua_settop`、`luaL_setfuncs`）
 - Android 上模块库会先复制到应用私有目录再加载（绕开 linker namespace 限制）
-- 只在 Linux/桌面，才可以省掉 API 表、直接 `extern` 引用 `lua_*` / `patchlib_*`
+- 只有在 Linux/桌面，才可以省掉 API 表、直接 `extern` 引用 `lua_*` / `patchlib_*`
 
 > 完整指南（目录约定 / 编译 / Windows import lib / 排查）见 [`doc/native.md`](doc/native.md)。
 

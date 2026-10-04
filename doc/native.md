@@ -32,8 +32,8 @@ loader 进程导出的符号）。
 就是标准 Lua C 模块，`require` 即可：
 
 ```lua
-local nativehello = require("nativehello")   -- 加载 nativehello.so / nativehello.dll
-print(nativehello.greet("world"))
+local hello = require("hello")   -- 加载 hello.so / hello.dll
+print(hello.greet("world"))
 ```
 
 命名规则同 Lua 官方：`require("foo")` → 查找 `foo.so` → 调用 `luaopen_foo`。
@@ -65,7 +65,7 @@ static int l_greet(lua_State *L) {
     return 1;
 }
 
-int luaopen_nativehello(lua_State *L) {
+int luaopen_hello(lua_State *L) {
     if (!LL) return 0;
     LL_CACHE(p_createtable, lua_createtable, void, (lua_State *, int, int));
     LL_CACHE(p_pushcclosure, lua_pushcclosure, void, (lua_State *, int (*)(lua_State *), int));
@@ -79,10 +79,11 @@ int luaopen_nativehello(lua_State *L) {
 
 要点：
 
-- `ll_api_t { version, size, lookup(name) }`：`lookup` 可解析 **loader 自身导出的任意符号**
-  （`lua_*`、`luaL_*`、`patchlib_*` …），无需链接任何库
+- `ll_api_t { version, size, lookup(name) }`：`lookup` 可解析 **loader 自身导出的符号**
+  （`lua_*`、`luaL_*` 函数，以及 `patchlib_*` 函数指针变量），无需链接任何库
 - `LL_CACHE(变量, 符号名, 返回类型, (参数类型...))` 宏：首次调用时解析并缓存函数指针
 - 拿 `patchlib_*` 同理：`LL_CACHE(p_type_get_type, patchlib_type_get_type, void *, (const char *, const char *));`
+  loader 里的 `patchlib_*` 是函数指针变量，`lookup` 会先解引用，所以拿到即可直接调用
 
 > 若 loader 未注入（旧版 loader），`LL` 为 NULL。模块里应 `if (!LL) return 0;` 优雅失败，不要崩溃。
 

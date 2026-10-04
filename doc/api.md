@@ -54,7 +54,7 @@ my_mod/
 mod.meta = { pkg_id = "lzup.lua.hello", version = "1.0.0" }
 
 function setup()
-    mod.info("hello from %s", mod.id)
+    mod.info("hello from " .. mod.id)
 end
 
 todo_list = { "setup" }
@@ -107,7 +107,7 @@ mod.meta = { pkg_id = "...", version = "1.0.0", version_code = 1, api_version = 
 
 ```lua
 mod.log("info", "x =", 42)          -- 通用写法，level 为字符串或数字 0~6
-mod.info("玩家 %s 已锁定", name)     -- 快捷方法
+mod.info("玩家 " .. name .. " 已锁定")   -- 快捷方法
 ```
 
 快捷方法：`mod.trace` / `mod.debug` / `mod.info` / `mod.warn` / `mod.error` / `mod.fatal`。
@@ -140,7 +140,7 @@ local player = mod.patch.get_type("Terraria", "Player")  -- 命名空间 + 类�
 local field  = mod.patch.get_field(player, "statMana")
 local prop   = mod.patch.get_property(player, "someProp")
 local method = mod.patch.get_method(player, "ResetEffects", 0)  -- 无参重载
-local method2 = mod.patch.get_method(player, "Foo")             -- 单参时可省略个数
+local method2 = mod.patch.get_method(player, "Foo")             -- 只有一个重载时可省略个数
 ```
 
 其它：
@@ -167,7 +167,7 @@ local method2 = mod.patch.get_method(player, "Foo")             -- 单参时可�
 | `method_is_instance(m)` / `method_is_static(m)` | 是否实例 / 静态方法 |
 | `field_name(f)` / `field_is_const(f)` / `field_is_instance(f)` / `field_is_static(f)` | 字段名 / 只读 / 实例 / 静态 |
 | `property_name(p)` | 属性名 |
-| `array_empty(arr)` | 清空数组 |
+| `array_empty(arr)` | 数组是否为空 |
 | `dictionary_create(kt, vt[, cap])` | 创建 `Dictionary<,>`（kt/vt 为类型句柄） |
 | `dictionary_add(dict, k, kt, v, vt)` | 新增键值对 |
 | `dictionary_set_value(dict, k, kt, v, vt)` | 修改键值对 |
@@ -177,7 +177,7 @@ local method2 = mod.patch.get_method(player, "Foo")             -- 单参时可�
 | `list_add(list, v, vt)` / `list_remove(list, v, vt)` / `list_remove_at(list, i)` / `list_clear(list)` | 增删改查 |
 | `list_copy_from(list, array)` / `list_get_array(list)` | 从数组填充 / 取内部数组 |
 | `struct_arg({"float","float"}, {x, y})` | 打包按值结构体参数（如 `Vector2`，**仅 Android**） |
-| `invoke_value_args(method, instance, {arg...})` | 调用含按值结构体参数的方法（表项可用 `struct_arg`，**仅 Android**） |
+| `invoke_value_args(method[, instance], {arg...})` | 调用含按值结构体参数的方法（表项可用 `struct_arg`，**仅 Android**） |
 | `is_valid(handle)` | 句柄是否有效 |
 | `free(handle)` | 手动释放句柄（一般不用，见下） |
 
@@ -210,7 +210,7 @@ local x, y = mod.patch.get_field_vec2(field, instance)
 mod.patch.set_field_vec2(field, instance, x, y)
 ```
 
-任意原始字节（长度 1~16，可配 `string.pack/unpack`）：
+任意原始字节（长度 1~16，可配合 `string.pack`/`string.unpack`）：
 
 ```lua
 local raw = mod.patch.get_field_raw(field, instance)   -- 失败返回 nil
@@ -256,8 +256,8 @@ mod.patch.array_set_raw(array, i, raw)              -- 按字节写回
 local prop   = mod.patch.get_property(type, "SomeProp")
 local getter = mod.patch.property_get_method(prop)
 local setter = mod.patch.property_set_method(prop)
-local v = mod.patch.invoke(getter, instance)        -- 读
-mod.patch.invoke(setter, instance, newValue, "int32") -- 写
+local v = mod.patch.invoke(getter, instance)   -- 读
+mod.patch.invoke(setter, instance, newValue)  -- 写（参数类型取自方法签名）
 ```
 
 ### C 快通道（内存 / 指针，Android）
@@ -339,7 +339,7 @@ local r = mod.patch.invoke(method, [instance,] ...)
 ```
 
 实例方法要传 `instance`（静态方法第一个参数就是实参，无需 instance）。
-返回值：对象/引用类型得到句柄，无返回值得到 `nil`。
+返回值：对象/引用类型得到句柄，返回值为 `void` 时得到 `nil`，调用失败时得到 `false`。
 
 ### Hook
 
@@ -427,7 +427,7 @@ mod.patch.install_hook(method, { postfix = on_ai, copy = true })
 每帧把玩家魔力补满（Hook `Player.ResetEffects`）：
 
 ```lua
-mod.meta = { pkg_id = "lzup.lua.manalock", version = "1.0.0" }
+mod.meta = { pkg_id = "com.example.mymod", version = "1.0.0" }
 
 local stat_mana
 local stat_mana_max

@@ -1,7 +1,7 @@
 # LuaLoader
 
-LuaLoader is a TEFKernel ModLoader: the kernel handles injection and low-level hooks, LuaLoader runs
-your Lua scripts and hands the kernel's patchlib powers to them through a `mod` table.
+LuaLoader is a TEFKernel ModLoader: the kernel handles injection and low-level hooks, while LuaLoader
+runs your Lua scripts and exposes the kernel's patchlib capabilities to them through a `mod` table.
 
 In one line: **write mods in Lua, no compiling, one script works on every platform.**
 
@@ -10,14 +10,14 @@ In one line: **write mods in Lua, no compiling, one script works on every platfo
 ## What it does
 
 - Runs a mod's `main.lua`, manages its lifecycle and installs hooks;
-- Gives scripts the `mod` table: logging, private-file IO, and `mod.patch.*` (types/fields/methods/hooks);
+- Gives scripts the `mod` table: logging, private-file I/O, and `mod.patch.*` (types/fields/methods/hooks);
 - Each mod gets its own Lua state, so mods don't interfere;
-- Currently supports **Android arm64 / arm** and **Linux x64**.
+- Currently supports **Android arm64 / arm**, **Linux x64 / x86**, and **Windows x64 / x86**.
 
 ## Layout
 
 ```
-TEFKernel-LuaLoader/
+LuaLoader/
 ├── CMakeLists.txt / CMakePresets.json   # build script and presets
 ├── Info.json / Manifest.json            # loader package info
 ├── includes/                            # headers (core / logger / lua_engine / lua_api / tefkernel)
@@ -35,7 +35,7 @@ cmake --preset linux-x86_64-release
 cmake --build --preset linux-x86_64-release
 ```
 
-The output is `libloader.<platform>.<arch>.so` (Linux x64 → `libloader.linux.x64.so`).
+The output is `libloader.<platform>.<arch>.so` (`.dll` on Windows; Linux x64 → `libloader.linux.x64.so`).
 
 For Android you need the NDK:
 
@@ -66,10 +66,10 @@ my_lua_mod/
 { "main": "main.lua" }
 ```
 
-`main.lua` (this is the bundled ManaLock demo — keeps mana full every frame):
+`main.lua` (a small example that keeps mana full every frame):
 
 ```lua
-mod.meta = { pkg_id = "lzup.lua.manalock", version = "1.0.0" }
+mod.meta = { pkg_id = "com.example.mymod", version = "1.0.0" }
 
 local stat_mana
 local stat_mana_max
@@ -91,11 +91,11 @@ end
 todo_list = { "setup" }
 ```
 
-Only `main.lua` is run; other `.lua` files are not auto-run. Use `require("name")` to load them.
+Only the entry script (`main.lua` by default) is run; other `.lua` files are not auto-run. Use `require("name")` to load them.
 
 ## The `mod` table
 
-Context: `mod.id`, `mod.platform` / `mod.arch` (`android`/`linux`, `arm64`/`arm`/`x64`/`x86`),
+Context: `mod.id`, `mod.platform` / `mod.arch` (`android`/`linux`/`windows`, `arm64`/`arm`/`x64`/`x86`),
 `mod.private_dir`, `mod.mod_dir`, `mod.version`.
 
 Logging: `mod.log(level, ...)` where level is `"trace"`/`"debug"`/`"info"`/`"warn"`/`"error"`/`"critical"`/`"fatal"`
@@ -109,7 +109,8 @@ Lifecycle: `mod.init()` runs on init, `mod.cleanup()` runs on unload.
 ## Platform differences
 
 Prefer task lists: declare functions outside and list their names; the loader runs
-`todo_list` → `todo_list_<platform>` → `todo_list_<platform>_<arch>`, only the ones matching the current platform.
+`todo_list` → `todo_list_<platform>` → `todo_list_<platform>_<arch>` in that order, and only the
+lists matching the current platform/arch actually run.
 
 ```lua
 function setup()         mod.info("common") end
@@ -193,7 +194,7 @@ mod.patch.field_size(field)                            -- 0 if unavailable
 > `Framing.GetTileSafely` ...), keeping a single cross-platform script. See `doc/api.md` for a worked example.
 
 Methods: `mod.patch.invoke(method, [instance, ] ...)`. A reference return value comes back as
-userdata; no result comes back as `nil`.
+userdata; a `void` method returns `nil`, and a failed call returns `false`.
 
 Hooks:
 
@@ -250,8 +251,8 @@ ends up at `<private_dir>/lib/main.lua`. The loader looks for it in this order:
 
 ## Native modules (C/C++ extensions)
 
-A mod may ship native libraries under `Resources/native/<platform>_<arch>/`; they are added to
-`package.cpath` and preloaded by the loader.
+A mod may ship native libraries under `Resources/native/<platform>_<arch>/`; the loader adds that
+directory to `package.cpath` and preloads the libraries in it.
 
 Recommended way to call Lua/kernel APIs: use the injected API table (works on all platforms):
 
@@ -264,12 +265,16 @@ LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }
 int luaopen_mymod(lua_State *L) {
     if (!LL) return 0;
     LL_CACHE(p_pushinteger, lua_pushinteger, void, (lua_State *, long long));
-    p_pushinteger(L, 42);  /* NOTE: macros like lua_pushcfunction have no symbol; use lua_pushcclosure */
+    p_pushinteger(L, 42);  /* macros such as lua_pushcfunction have no symbol; look up lua_pushcclosure */
     return 1;
 }
 ```
 
-- `LL->lookup(name)` resolves any symbol exported by the loader (`lua_*`, `luaL_*`, `patchlib_*`).
+- `LL->lookup(name)` resolves any symbol exported by the loader (`lua_*`, `luaL_*`, `patchlib_*`);
+  for `patchlib_*` symbols it returns a directly callable function pointer.
+- Macros declared in `lua.h` (e.g. `lua_pushcfunction`, `lua_tointeger`, `lua_tostring`, `lua_newtable`,
+  `lua_pop`, `luaL_newlib`) have no exported symbol; look up the real functions instead
+  (`lua_pushcclosure`, `lua_tointegerx`, `lua_tolstring`, `lua_createtable`, `lua_settop`, `luaL_setfuncs`).
 - On Android the library is copied to the app-private directory before `dlopen` (linker namespace limits).
 - Windows needs the import lib from `sdk/windows_<arch>/` when linking.
 - Full guide (with complete C example and build commands): [`doc/native.md`](doc/native.md).
