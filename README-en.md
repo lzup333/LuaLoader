@@ -258,7 +258,6 @@ Recommended way to call Lua/kernel APIs: use the injected API table (works on al
 
 ```c
 #include "lualoader_mod.h"
-typedef struct lua_State lua_State;
 static const ll_api_t *LL = NULL;
 LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }
 

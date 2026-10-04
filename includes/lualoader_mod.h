@@ -29,6 +29,13 @@
 extern "C" {
 #endif
 
+/* 如果模块没有包含 lua.h，这里提供最少的类型定义（lua.h 的包含守卫是 lua_h） */
+#if !defined(lua_h)
+struct lua_State;
+typedef struct lua_State lua_State;
+typedef int (*lua_CFunction)(lua_State *L);
+#endif
+
 typedef struct ll_api_t {
     uint32_t version; /* 当前为 1 */
     uint32_t size;    /* sizeof(ll_api_t)，用于向后兼容追加字段 */

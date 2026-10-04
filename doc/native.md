@@ -48,7 +48,6 @@ Android 上 loader 以 `RTLD_LOCAL` 从 memfd 加载，模块的 `lua_*` 未定�
 ```c
 #include "lualoader_mod.h"
 
-typedef struct lua_State lua_State;          /* 拿类型即可，不需要 lua.h */
 
 static const ll_api_t *LL = NULL;
 LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }   /* loader 注入 */
