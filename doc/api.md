@@ -424,7 +424,7 @@ mod.patch.install_hook(method, { postfix = on_ai, copy = true })
 
 ## 完整示例
 
-每帧把玩家魔力补满（`LuaManaLock/Resources/lib/main.lua`）：
+每帧把玩家魔力补满（Hook `Player.ResetEffects`）：
 
 ```lua
 mod.meta = { pkg_id = "lzup.lua.manalock", version = "1.0.0" }

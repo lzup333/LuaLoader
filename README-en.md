@@ -20,7 +20,6 @@ In one line: **write mods in Lua, no compiling, one script works on every platfo
 TEFKernel-LuaLoader/
 ├── CMakeLists.txt / CMakePresets.json   # build script and presets
 ├── Info.json / Manifest.json            # loader package info
-├── LuaManaLock/                         # bundled demo mod (mana lock)
 ├── includes/                            # headers (core / logger / lua_engine / lua_api / tefkernel)
 ├── mod-api/                             # log level definitions
 ├── lib/                                 # bundled Lua 5.4 and spdlog
@@ -212,9 +211,6 @@ hook:remove()   -- remove manually
 At least one of `prefix`/`postfix` is required. Up to **1024** hooks per loader (shared, slots are freed and reused on remove/unload). A hook stays active until
 `hook:remove()` or mod unload — dropping the returned value does **not** remove it.
 
-## Demo
-
-`LuaManaLock/` in this project is a complete demo (mana lock).
 
 ## Debug mode & hot reload
 
@@ -268,7 +264,7 @@ LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }
 int luaopen_mymod(lua_State *L) {
     if (!LL) return 0;
     LL_CACHE(p_pushinteger, lua_pushinteger, void, (lua_State *, long long));
-    p_pushinteger(L, 42);
+    p_pushinteger(L, 42);  /* NOTE: macros like lua_pushcfunction have no symbol; use lua_pushcclosure */
     return 1;
 }
 ```
@@ -276,7 +272,7 @@ int luaopen_mymod(lua_State *L) {
 - `LL->lookup(name)` resolves any symbol exported by the loader (`lua_*`, `luaL_*`, `patchlib_*`).
 - On Android the library is copied to the app-private directory before `dlopen` (linker namespace limits).
 - Windows needs the import lib from `sdk/windows_<arch>/` when linking.
-- Full guide: [`doc/native.md`](doc/native.md).
+- Full guide (with complete C example and build commands): [`doc/native.md`](doc/native.md).
 
 > Security: native modules run arbitrary native code in the game process. Only install mods from
 > sources you trust.

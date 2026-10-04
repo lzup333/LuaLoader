@@ -68,10 +68,10 @@ static int l_greet(lua_State *L) {
 int luaopen_nativehello(lua_State *L) {
     if (!LL) return 0;
     LL_CACHE(p_createtable, lua_createtable, void, (lua_State *, int, int));
-    LL_CACHE(p_pushcfunction, lua_pushcfunction, void, (lua_State *, int (*)(lua_State *)));
+    LL_CACHE(p_pushcclosure, lua_pushcclosure, void, (lua_State *, int (*)(lua_State *), int));
     LL_CACHE(p_setfield, lua_setfield, void, (lua_State *, int, const char *));
     p_createtable(L, 0, 1);
-    p_pushcfunction(L, l_greet);
+    p_pushcclosure(L, l_greet, 0);
     p_setfield(L, -2, "greet");
     return 1;
 }
@@ -92,21 +92,111 @@ int luaopen_nativehello(lua_State *L) {
 （`lua_*` 与 `patchlib_*` 函数指针变量，签名同 `includes/tefkernel/patchlib/*.h`）。
 但 **Android 不可用**（符号作用域封闭），所以跨平台模块请用 3.1。
 
+### 3.3 注意：有些名字是“宏”，不是符号
+
+`lookup` 只能拿到**真实导出符号**。Lua 头文件里不少常用名是宏，直接 lookup 会得到 NULL，
+请改用其底层真实函数：
+
+| 宏（无符号） | 真实符号（可 lookup） |
+|---|---|
+| `lua_pushcfunction` | `lua_pushcclosure`（补 `0` 参数） |
+| `lua_tostring` | `lua_tolstring`（补 `NULL`） |
+| `lua_tonumber` | `lua_tonumberx`（补 `NULL`） |
+| `lua_tointeger` | `lua_tointegerx`（补 `NULL`） |
+| `lua_newtable` | `lua_createtable(L,0,0)` |
+| `lua_pop` | `lua_settop(L,-(n)-1)` |
+| `luaL_checkstring` | `luaL_checklstring`（补 `NULL`） |
+| `luaL_optstring` | `luaL_optlstring`（补 `NULL`） |
+| `luaL_newlib` | `luaL_checkversion` + `luaL_newlibtable` + `luaL_setfuncs` |
+
+不确定某个名字是函数还是宏时，查 `lib/lua-5.4.8/src/lua.h` 里的 `LUA_API` / `#define`。
+
 ## 4. 完整示例
 
-见 [`examples/native_hello`](../examples/native_hello)：
+```c
+/* mymod.c —— 编译见下方命令；不需要 <lua.h> */
+#include "lualoader_mod.h"
+#include <stddef.h>
 
-- `src/nativehello.c`：C 模块源码
-- `build.sh <目标>`：一键编译到 `Mod/Resources/native/<目标>/`
-  - 支持 `linux_x64`、`linux_x86`、`windows_x64`、`windows_x86`、`android_arm64`、`android_arm`
-  - Android 需先 `export ANDROID_NDK_HOME=...`
-  - Windows 需 import lib（`LUALOADER_WIN_IMPLIB` 可指定）
-- `Mod/`：可直接打成 zip 的 Mod 包骨架
+typedef struct lua_State lua_State;
 
-打包 Mod：
+static const ll_api_t *LL = NULL;
+LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }   /* loader 注入 */
+
+/* add(a, b) -> number */
+static int l_add(lua_State *L) {
+    if (!LL) return 0;
+    LL_CACHE(p_tointeger, lua_tointegerx, long long, (lua_State *, int, int *));
+    LL_CACHE(p_pushinteger, lua_pushinteger, void, (lua_State *, long long));
+    if (!p_tointeger || !p_pushinteger) return 0;
+    int isnum = 0;
+    long long a = p_tointeger(L, 1, &isnum);
+    long long b = p_tointeger(L, 2, &isnum);
+    p_pushinteger(L, a + b);
+    return 1;
+}
+
+/* my_player() -> number（用内核 API 读 Main.myPlayer） */
+static int l_my_player(lua_State *L) {
+    if (!LL) return 0;
+    LL_CACHE(p_type_get_type, patchlib_type_get_type, void *, (const char *, const char *));
+    LL_CACHE(p_type_get_field, patchlib_type_get_field, void *, (void *, const char *));
+    LL_CACHE(p_field_get_value, patchlib_field_get_value, void, (void *, void *, void *));
+    LL_CACHE(p_pushinteger, lua_pushinteger, void, (lua_State *, long long));
+    if (!p_type_get_type || !p_type_get_field || !p_field_get_value || !p_pushinteger)
+        return 0;
+
+    void *main_cls = p_type_get_type("Terraria", "Main");
+    void *f = main_cls ? p_type_get_field(main_cls, "myPlayer") : NULL;
+    if (!f) return 0;
+    int idx = -1;
+    p_field_get_value(f, NULL, &idx);          /* 静态字段，实例传 NULL */
+    p_pushinteger(L, idx);
+    return 1;
+}
+
+int luaopen_mymod(lua_State *L) {
+    if (!LL) return 0;
+    LL_CACHE(p_createtable, lua_createtable, void, (lua_State *, int, int));
+    LL_CACHE(p_pushcclosure, lua_pushcclosure, void, (lua_State *, int (*)(lua_State *), int));
+    LL_CACHE(p_setfield, lua_setfield, void, (lua_State *, int, const char *));
+    if (!p_createtable || !p_pushcclosure || !p_setfield) return 0;
+
+    p_createtable(L, 0, 2);
+    p_pushcclosure(L, l_add, 0);
+    p_setfield(L, -2, "add");
+    p_pushcclosure(L, l_my_player, 0);
+    p_setfield(L, -2, "my_player");
+    return 1;
+}
+```
+
+编译（Linux / Android / Windows）：
 
 ```bash
-cd examples/native_hello/Mod && zip -qrX ../NativeHello.zip .
+INC=-I<LuaLoader>/includes
+
+# Linux x64
+clang -O2 -fPIC -shared -o mymod.so mymod.c $INC
+
+# Android arm64
+$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang \
+  -O2 -fPIC -shared -o mymod.so mymod.c $INC
+
+# Windows x64（PE 需 import lib，仓库 sdk/ 下提供）
+x86_64-w64-mingw32-gcc -O2 -shared -o mymod.dll mymod.c $INC \
+  <LuaLoader>/sdk/windows_x64/libloader.windows.x64.dll.a
+```
+
+放置与打包：
+
+```
+MyMod/
+├── Info.json / luamod.json / Manifest.json
+└── Resources/
+    ├── lib/main.lua                  -- local m = require("mymod")
+    └── native/<平台>_<架构>/mymod.so  -- 按平台放置
+cd MyMod && zip -qrX ../MyMod.zip .
 ```
 
 ## 5. 加载与失败排查

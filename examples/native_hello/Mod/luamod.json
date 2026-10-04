@@ -1,8 +1,0 @@
-{
-  "main": "main.lua",
-  "pkg_id": "lzup.native.nativehello",
-  "version": "1.0.0",
-  "version_code": 1,
-  "api_version": 1,
-  "multiplayer_safe": false
-}

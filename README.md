@@ -22,7 +22,6 @@ LuaLoader 是 TEFKernel 的一个 ModLoader：内核负责注入和底层 hook�
 TEFKernel-LuaLoader/
 ├── CMakeLists.txt / CMakePresets.json   # 构建脚本和预设
 ├── Info.json / Manifest.json            # 加载器包信息
-├── LuaManaLock/                         # 自带示范 Mod（魔力锁定）
 ├── includes/                            # 头文件（core / logger / lua_engine / lua_api / tefkernel）
 ├── mod-api/                             # 日志级别定义
 ├── lib/                                 # 内置 Lua 5.4 和 spdlog
@@ -333,9 +332,6 @@ hook:remove()   -- 手动卸载
 - `prefix` / `postfix` 至少写一个；
 - 最多 **1024** 个钩子（全加载器共享，`remove()`/卸载后释放可复用），钩子装上后一直有效，直到 `hook:remove()` 或 Mod 卸载（丢弃返回值不会导致失效）。
 
-## 示范 Mod
-
-项目里的 `LuaManaLock/` 是一个完整示范（魔力锁定）。
 
 ## 调试模式与热重载
 
@@ -405,7 +401,7 @@ LL_EXPORT void ll_set_api(const ll_api_t *api) { LL = api; }  /* loader 注入 *
 int luaopen_mymod(lua_State *L) {
     if (!LL) return 0;                                        /* 旧 loader 未注入则优雅失败 */
     LL_CACHE(p_pushinteger, lua_pushinteger, void, (lua_State *, long long));
-    p_pushinteger(L, 1);
+    p_pushinteger(L, 1);   /* 注意：像 lua_pushcfunction / lua_tointeger 是宏，没有同名符号 */
     return 1;
 }
 ```
