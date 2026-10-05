@@ -283,5 +283,13 @@ int luaopen_mymod(lua_State *L) {
 
 ## License
 
-LuaLoader itself is **AGPL-3.0-or-later** (see `LICENSE`). `includes/tefkernel/` and `mod-api/` come
-from TEFKernel (MIT); Lua, spdlog and json.hpp are MIT too.
+LuaLoader itself is **AGPL-3.0-or-later** (see [`LICENSE`](LICENSE)).
+
+Bundled third-party components, versions and licenses are listed in
+**[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)**; full license texts live in `LICENSES/` (sources listed in that file):
+
+- Lua 5.4.8, dear imgui 1.91.5, spdlog 1.17.0 (and its bundled {fmt}), nlohmann/json 3.12.0 — all **MIT**;
+- `includes/tefkernel/` come from **TEFKernel**: the repository as a whole is **AGPL-3.0**,
+  while the bundled headers are **MIT** per their file headers
+  (exception: `tefpackage/tefpkg.h` is marked AGPL-3.0);
+- `mod-api/mod_logger.h` comes from **KernelLoader** (same author, eternalfuture-e38299), **MIT**.

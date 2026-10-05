@@ -432,5 +432,12 @@ int luaopen_mymod(lua_State *L) {
 
 ## 许可证
 
-LuaLoader 本体是 **AGPL-3.0-or-later**（见 `LICENSE`）。
-`includes/tefkernel/` 和 `mod-api/` 来自 TEFKernel，是 MIT；Lua、spdlog、json.hpp 也都是 MIT。
+LuaLoader 本体是 **AGPL-3.0-or-later**（见 [`LICENSE`](LICENSE)）。
+
+随仓库分发的第三方组件、版本与许可证见 **[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)**；
+许可证**原文**在 `LICENSES/`（来源见该说明文件）：
+
+- Lua 5.4.8、dear imgui 1.91.5、spdlog 1.17.0（及其内置的 {fmt}）、nlohmann/json 3.12.0 —— 均为 **MIT**；
+- `includes/tefkernel/` 来自 **TEFKernel**：仓库整体 **AGPL-3.0**，随附头文件按文件头为 **MIT**
+  （例外：`tefpackage/tefpkg.h` 标注 AGPL-3.0）；
+- `mod-api/mod_logger.h` 来自 **KernelLoader**（作者同为 eternalfuture-e38299），**MIT**。
