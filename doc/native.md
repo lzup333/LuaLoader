@@ -81,11 +81,12 @@ print(hello())            -- hello
 - `LL_CACHE(变量, 符号名, 返回类型, (参数类型...))`：首次调用时解析并缓存
 - loader 未注入（旧版）时 `LL` 为 NULL，模块应 `if (!LL) return 0;` 优雅失败
 
-### 3.2 直接 `extern`（仅 Linux/桌面可用）
+### 3.2 直接 `extern`（Linux / macOS / Windows）
 
-在 Linux/桌面，loader 以 `RTLD_GLOBAL` 预加载原生库，模块可直接引用 loader 导出的符号
-（`lua_*` 与 `patchlib_*` 函数指针变量，签名同 `includes/tefkernel/patchlib/*.h`）。
-但 **Android 不可用**（符号作用域封闭），所以跨平台模块请用 3.1。
+- **Linux / macOS**：loader 以 `RTLD_GLOBAL` 预加载原生库，模块可直接引用 loader 导出的符号
+  （`lua_*` 与 `patchlib_*` 函数指针变量，签名同 `includes/tefkernel/patchlib/*.h`）。
+- **Windows**：链接 `sdk/windows_<arch>/libloader.windows.<arch>.dll.a`（仓库提供）后同样可直接 `extern`。
+- **Android 不可用**（符号作用域封闭），所以跨平台模块请统一用 3.1 的 API 表。
 
 ### 3.3 注意：有些名字是“宏”，不是符号
 
@@ -102,7 +103,7 @@ print(hello())            -- hello
 | `lua_pop` | `lua_settop(L,-(n)-1)` |
 | `luaL_checkstring` | `luaL_checklstring`（补 `NULL`） |
 | `luaL_optstring` | `luaL_optlstring`（补 `NULL`） |
-| `luaL_newlib` | `luaL_checkversion` + `luaL_newlibtable` + `luaL_setfuncs` |
+| `luaL_newlib` | `luaL_checkversion` + `luaL_newlibtable` + `luaL_setfuncs`（整体最后需 `return 1`） |
 
 不确定某个名字是函数还是宏时，查 `lib/lua-5.4.8/src/lua.h` 里的 `LUA_API` / `#define`。
 

@@ -17,6 +17,8 @@ LuaLoader 用 Lua 写 Mod，不用编译，一份脚本全平台通用。每个 
   - [取类型与成员](#取类型与成员)
   - [字段读写](#字段读写)
   - [数组](#数组)
+  - [属性桥接](#属性桥接)
+  - [C 快通道（内存 / 指针，Android）](#c-快通道内存--指针android)
   - [托管字符串](#托管字符串)
   - [创建实例](#创建实例)
   - [调用方法](#调用方法)
@@ -94,8 +96,8 @@ todo_list_android = { "android_setup" }    -- 仅 Android
 | `mod.version` | 版本字符串 |
 | `mod.platform` | `android` / `linux` / `windows` / `macos` / `ios` / `unknown` |
 | `mod.arch` | `arm64` / `arm` / `x64` / `x86` / `unknown` |
-| `mod.mod_dir` | 存放脚本的目录 |
-| `mod.private_dir` | Mod 私有数据目录（文件 API 的根） |
+| `mod.mod_dir` | 入口脚本所在目录（部署后通常是 `<private_dir>/lib`），`require` 的搜索根 |
+| `mod.private_dir` | Mod 私有数据目录；文件 API 的根，也是内核释放 `Resources/` 的位置 |
 
 `mod.meta`（可选）可覆盖 `luamod.json` 里的信息：
 
@@ -106,7 +108,7 @@ mod.meta = { pkg_id = "...", version = "1.0.0", version_code = 1, api_version = 
 ### 日志
 
 ```lua
-mod.log("info", "x =", 42)          -- 通用写法，level 为字符串或数字 0~6
+mod.log("info", "x =", 42)          -- 通用写法；level 为字符串（trace/debug/info/warn/warning/error/critical/fatal）或数字 0~6
 mod.info("玩家 " .. name .. " 已锁定")   -- 快捷方法
 ```
 
@@ -159,8 +161,8 @@ local method2 = mod.patch.get_method(player, "Foo")             -- 只有一个�
 | `get_methods(type[, 含父类])` | 方法句柄表 `{ method, ... }` |
 | `get_properties(type[, 含父类])` | 属性句柄表 `{ property, ... }` |
 | `get_inner_types(type[, 含父类])` | 嵌套类型句柄表 |
-| `get_method_by_param_types(type, name, {type...})` | 按参数类型精确选重载 |
-| `get_method_by_signature(type, name, {type...}, {name...})` | 按参数类型+参数名精确选重载 |
+| `get_method_by_param_types(type, name, {类型句柄...})` | 按参数类型精确选重载（表里放类型**句柄**，如 `get_basic_type("int32")`） |
+| `get_method_by_signature(type, name, {类型句柄...}, {参数名...})` | 按参数类型（句柄）+ 参数名选重载；第二个表可省略 |
 | `make_generic_type(generic_def, {type...})` | 实例化泛型类型（如 `Dictionary<,>`） |
 | `make_generic_instance(method, {type...})` | 实例化泛型方法 |
 | `method_name(m)` / `method_param_count(m)` / `method_token(m)` | 方法名 / 参数个数 / Token（可当缓存键） |
@@ -168,18 +170,31 @@ local method2 = mod.patch.get_method(player, "Foo")             -- 只有一个�
 | `field_name(f)` / `field_is_const(f)` / `field_is_instance(f)` / `field_is_static(f)` | 字段名 / 只读 / 实例 / 静态 |
 | `property_name(p)` | 属性名 |
 | `array_empty(arr)` | 数组是否为空 |
-| `dictionary_create(kt, vt[, cap])` | 创建 `Dictionary<,>`（kt/vt 为类型句柄） |
-| `dictionary_add(dict, k, kt, v, vt)` | 新增键值对 |
-| `dictionary_set_value(dict, k, kt, v, vt)` | 修改键值对 |
-| `dictionary_get_value(dict, k, kt, vt)` | 按键取值 |
-| `dictionary_length(dict)` / `dictionary_remove(dict, k, kt)` / `dictionary_clear(dict)` | 长度 / 删除 / 清空 |
-| `list_create(type[, cap])` | 创建 `List<>` |
-| `list_add(list, v, vt)` / `list_remove(list, v, vt)` / `list_remove_at(list, i)` / `list_clear(list)` | 增删改查 |
-| `list_copy_from(list, array)` / `list_get_array(list)` | 从数组填充 / 取内部数组 |
+| `dictionary_create(key_type, value_type[, cap])` | 创建 `Dictionary<,>`；两参是类型**句柄** |
+| `dictionary_add(dict, k, kt, v, vt)` | 新增键值对（`kt`/`vt` 是类型**名**，见下注） |
+| `dictionary_set_value(dict, k, kt, v, vt)` | 修改键值对（`kt`/`vt` 是类型**名**） |
+| `dictionary_get_value(dict, k, kt, vt)` | 按键取值（`kt`/`vt` 是类型**名**），取不到返回 `nil` |
+| `dictionary_length(dict)` / `dictionary_remove(dict, k, kt)` / `dictionary_clear(dict)` | 长度 / 删除（`kt` 是类型**名**）/ 清空 |
+| `list_create(elem_type[, cap])` | 创建 `List<>`；参数是类型**句柄** |
+| `list_add(list, v, vt)` / `list_remove(list, v, vt)` | 增删元素（`vt` 是类型**名**） |
+| `list_remove_at(list, i)` / `list_clear(list)` / `list_copy_from(list, array)` / `list_get_array(list)` | 按下标删除 / 清空 / 从数组填充 / 取内部数组 |
 | `struct_arg({"float","float"}, {x, y})` | 打包按值结构体参数（如 `Vector2`，**仅 Android**） |
 | `invoke_value_args(method[, instance], {arg...})` | 调用含按值结构体参数的方法（表项可用 `struct_arg`，**仅 Android**） |
 | `is_valid(handle)` | 句柄是否有效 |
 | `free(handle)` | 手动释放句柄（一般不用，见下） |
+
+> **容器（Dictionary / List）的类型参数怎么给？**
+> - `dictionary_create` / `list_create` 需要类型**句柄**（用 `get_type(...)` 或
+>   `get_basic_type("int32")` 得到），用来实例化 `Dictionary<TKey,TValue>` / `List<T>`。
+> - `dictionary_add/set_value/get_value/remove`、`list_add/remove` 的 `kt` / `vt` 是类型**名字符串**
+>   （`"int32"` / `"float"` / `"bool"` / `"object"` …），内核据此把 Lua 值编组进容器。**不要传句柄。**
+>
+> ```lua
+> local int_t = mod.patch.get_basic_type("int32")          -- 类型句柄
+> local dict  = mod.patch.dictionary_create(int_t, int_t)
+> mod.patch.dictionary_add(dict, 1, "int32", 100, "int32") -- 类型名用字符串
+> local v = mod.patch.dictionary_get_value(dict, 1, "int32", "int32")  -- 100
+> ```
 
 > **嵌套类型**：像 `Terraria.ID.ItemID.Sets`、`Terraria.GameContent.Prefixes.PrefixLegacy.ItemSets`
 > 这类嵌套类，用 `get_type("Terraria.ID", "ItemID.Sets")` 在 Android 上取不到。
@@ -213,8 +228,8 @@ mod.patch.set_field_vec2(field, instance, x, y)
 任意原始字节（长度 1~16，可配合 `string.pack`/`string.unpack`）：
 
 ```lua
-local raw = mod.patch.get_field_raw(field, instance)   -- 失败返回 nil
-mod.patch.set_field_raw(field, instance, raw)
+local raw = mod.patch.get_field_raw(field, instance[, size])  -- 省略 size 时按字段类型推断，失败返回 nil
+mod.patch.set_field_raw(field, instance, raw)                 -- raw 长度需为 1~16 字节
 ```
 
 ### 数组
@@ -338,8 +353,19 @@ local obj3 = mod.patch.construct(ctor, 1, "x")     -- 用显式构造函数
 local r = mod.patch.invoke(method, [instance,] ...)
 ```
 
-实例方法要传 `instance`（静态方法第一个参数就是实参，无需 instance）。
-返回值：对象/引用类型得到句柄，返回值为 `void` 时得到 `nil`，调用失败时得到 `false`。
+- **实例方法**：`invoke(method, instance, 实参...)`，第 2 个参数是接收者。
+- **静态方法**：`invoke(method, 实参...)`，**不传 instance**。内核按方法签名自动区分；
+  也可用 `method_is_instance(m)` / `method_is_static(m)` 提前判断。
+
+```lua
+-- 实例方法 Player.Heal(int)
+mod.patch.invoke(heal, player, 20)
+-- 静态方法 Main.NewText(...)
+mod.patch.invoke(new_text, str, 255, 255, 255)
+```
+
+返回值：引用类型返回一个**借用句柄**（仅当前调用内有效，要跨帧缓存请 `retain`），
+`void` 返回 `nil`，调用失败返回 `false`。
 
 ### Hook
 

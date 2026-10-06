@@ -105,7 +105,7 @@ todo_list = { "setup" }
 
 日志：
 
-- `mod.log(level, ...)`，level 是 `"trace"`/`"debug"`/`"info"`/`"warn"`/`"error"`/`"critical"`/`"fatal"`（或数字 0~6）
+- `mod.log(level, ...)`，level 是 `"trace"`/`"debug"`/`"info"`/`"warn"`/`"warning"`/`"error"`/`"critical"`/`"fatal"`（或数字 0~6）
 - 快捷方法：`mod.trace` / `mod.debug` / `mod.info` / `mod.warn` / `mod.error` / `mod.fatal`
 
 私有目录读写（只能在 `mod.private_dir` 里，禁止 `..` 和绝对路径）：
@@ -188,10 +188,12 @@ todo_list_android = { "android_setup" }        -- 只在 Android 执行
 
 - `get_full_name(type)` / `get_namespace(type)`
 - `get_fields(type)` / `get_methods(type)` / `get_properties(type)` / `get_inner_types(type)`
-- `get_method_by_param_types(type, name, {type...})` / `get_method_by_signature(type, name, {type...}, {name...})`
+- `get_method_by_param_types(type, name, {类型句柄...})` / `get_method_by_signature(type, name, {类型句柄...}, {参数名...})`
+  （表里放类型**句柄**，如 `get_basic_type("int32")`；后者参数名表可省略）
 - `make_generic_type(def, {type...})` / `make_generic_instance(method, {type...})`
 - `method_name/param_count/token/is_instance/is_static`、`field_name/is_const/is_instance/is_static`、`property_name`
 - 容器：`dictionary_create/add/set_value/get_value/length/remove/clear`、`list_create/add/remove/remove_at/clear/copy_from/get_array`、`array_empty`
+  （`*_create` 传类型**句柄**；`add/set_value/get_value/remove` 的类型参数是类型**名**字符串，细节见 `doc/api.md`）
 - 按值结构体参数（仅 Android）：`struct_arg({"float","float"},{x,y})` + `invoke_value_args(method[, instance], {arg...})`
 
 读写字段：
@@ -260,9 +262,9 @@ local obj3 = mod.patch.construct(ctor, 1, "x")
 local x, y = mod.patch.get_field_vec2(field, instance)
 mod.patch.set_field_vec2(field, instance, x, y)
 
--- 原始字节读写，长度 = 字段大小（配合 string.pack/unpack 可处理任意结构体）
-local raw = mod.patch.get_field_raw(field, instance)   -- 失败返回 nil
-mod.patch.set_field_raw(field, instance, raw)
+-- 原始字节读写（配合 string.pack/unpack 可处理任意结构体）
+local raw = mod.patch.get_field_raw(field, instance[, size])  -- 省略 size 时按字段类型推断；失败返回 nil
+mod.patch.set_field_raw(field, instance, raw)                 -- raw 长度需为 1~16 字节
 
 -- 数组（如 Main.npc / Main.projectile 这类对象数组）
 local n = mod.patch.array_length(array)
@@ -297,13 +299,14 @@ mod.patch.field_size(field)                            -- 字段字节大小（�
 > 桌面端 `field_pointer` 返回 `nil`，Mod 自动退回托管路径（`array_at` / `Framing.GetTileSafely` 等），
 > 从而保持**一份脚本全平台**。具体用法与示例见 [`doc/api.md`](doc/api.md)。
 
-调用方法：
+调用方法（实例方法第 2 参传 `instance`，静态方法不传）：
 
 ```lua
 mod.patch.invoke(method, [instance, ] ...)
 ```
 
-方法返回对象(引用类型)时得到 userdata，返回值为 `void` 时得到 `nil`，调用失败时得到 `false`。
+引用类型返回一个**借用句柄**（仅当前调用内有效，要跨帧缓存请 `retain`），`void` 返回 `nil`，
+调用失败返回 `false`。
 
 钩子 `postfix` **默认忽略返回值**（与旧版一致，保证兼容）。若需要它覆盖原方法返回值，
 安装时加 `override_result = true`（或 `result = true`）：
