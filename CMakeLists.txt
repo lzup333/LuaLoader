@@ -23,17 +23,28 @@ add_subdirectory(lib/lua-5.4.8)
 
 # 原生 GUI：直接使用游戏自带的 XNA/Unity SpriteBatch 绘制，不再依赖 Dear ImGui。
 set(LUALOADER_SOURCES
-        src/core.cpp
-        src/logger.cpp
-        src/lua_engine.cpp
-        src/lua_api.cpp
-        src/mod_api.cpp
+        src/core/core.cpp
+        src/core/logger.cpp
+        src/lua/lua_engine.cpp
+        src/api/api_common.cpp
+        src/api/api_fs.cpp
+        src/api/api_net.cpp
+        src/api/api_patch_core.cpp
+        src/api/api_patch_array.cpp
+        src/api/api_patch_inspect.cpp
+        src/api/api_patch_container.cpp
+        src/api/api_patch_struct.cpp
+        src/api/api_patch_hook.cpp
+        src/api/api_item.cpp
+        src/api/api_projectile.cpp
+        src/api/api_register.cpp
+        src/core/mod_api.cpp
         src/gui.cpp
-        src/gui_images.cpp
-        src/gui_ime.cpp
-        src/gui_keyboard.cpp
-        src/pinyin.cpp
-        src/image_decode.cpp
+        src/gui/gui_images.cpp
+        src/gui/gui_ime.cpp
+        src/gui/gui_keyboard.cpp
+        src/util/pinyin.cpp
+        src/util/image_decode.cpp
         includes/tefkernel/tef_api_imp.c
 )
 
