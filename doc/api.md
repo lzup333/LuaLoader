@@ -13,11 +13,13 @@ my_mod/
 ```
 
 ```lua
-mod.meta = { pkg_id = "lzup.lua.hello", version = "1.0.0" }
+mod.meta = { pkg_id = "lzup.lua.hello", version = "1.0.0" }  -- Mod 唯一 id + 版本
 
-function setup() mod.info("hello") end
+function setup()
+    mod.info("hello")     -- 打日志：信息会进内核日志
+end
 
-todo_list = { "setup" }
+todo_list = { "setup" }   -- 启动时按顺序执行清单里的函数
 ```
 
 ## 生命周期
@@ -65,10 +67,19 @@ mod.file_exists("cfg.txt")                   -- true/false
 ### 取类型与成员
 
 ```lua
-local player = mod.patch.get_type("Terraria", "Player")      -- 命名空间 + 类名
-local field  = mod.patch.get_field(player, "statMana")
-local prop   = mod.patch.get_property(player, "SomeProp")
+local player = mod.patch.get_type("Terraria", "Player")      -- 命名空间 + 类名 -> 类型句柄
+local field  = mod.patch.get_field(player, "statMana")       -- 字段句柄（含父类）
+local prop   = mod.patch.get_property(player, "SomeProp")    -- 属性句柄
 local method = mod.patch.get_method(player, "ResetEffects", 0)  -- 0 参重载；唯一重载可省略个数
+```
+
+改一个字段的最小流程：
+
+```lua
+local player = mod.patch.get_type("Terraria", "Player")   -- 1. 取类型
+local mana   = mod.patch.get_field(player, "statMana")    -- 2. 取字段
+local p      = ...                                         -- 3. 玩家实例（来自 hook 参数等）
+mod.patch.set_field_value(mana, p, 999, "int32")          -- 4. 写：字段, 实例, 值, 类型
 ```
 
 | 函数 | 说明 |
@@ -121,7 +132,18 @@ mod.patch.array_at_raw(array, i, size)               -- 原始字节读
 mod.patch.array_set_raw(array, i, raw)
 ```
 
-对象数组（如 `Main.npc`）用 `get_field_value(field, nil, "object")` 取。
+对象数组（如 `Main.npc`）用 `get_field_value(field, nil, "object")` 取：
+
+```lua
+local main = mod.patch.get_type("Terraria", "Main")
+local npcs = mod.patch.get_field_value(mod.patch.get_field(main, "npc"), nil, "object")  -- 静态字段，instance=nil
+for i = 0, mod.patch.array_length(npcs) - 1 do
+    local npc = mod.patch.array_at(npcs, i)   -- 对象数组：省略类型，返回句柄
+    if mod.patch.is_valid(npc) then
+        -- 拿到的是“借用”句柄，只在本次循环里有效；要缓存用 retain
+    end
+end
+```
 
 ### 托管字符串 / 创建实例 / 调用方法
 
@@ -135,6 +157,11 @@ mod.patch.new_instance(type, 1, "x")         -- 按 .ctor 参数个数自动匹�
 mod.patch.construct(ctor, 1, "x")            -- 显式构造函数
 
 mod.patch.invoke(method, [instance,] ...)    -- 实例方法传 instance，静态不传
+
+-- 实例方法 Player.Heal(int)：第二个参数是接收者
+mod.patch.invoke(heal, player, 20)
+-- 静态方法：不传 instance
+mod.patch.invoke(some_static_method, arg1, arg2)
 ```
 
 `invoke` 引用类型返回**借用句柄**（跨帧要 `retain`），`void` 返回 `nil`，失败返回 `false`。
@@ -186,6 +213,28 @@ hook:remove()
 
 - `args` 是 1 起始的参数数组；静态方法 `instance` 为 `nil`；`prefix`/`postfix` 至少一个。
 - 最多 1024 个钩子；装上后到 `remove()` 或 Mod 卸载前一直有效。
+
+一个真实例子：每次玩家 `ResetEffects` 后把魔力补满（postfix，不被原版覆盖）：
+
+```lua
+local stat_mana, stat_mana_max
+
+function lock_mana(instance)                            -- instance = 这个 Player
+    local max = mod.patch.get_field_value(stat_mana_max, instance, "int32")
+    mod.patch.set_field_value(stat_mana, instance, max, "int32")
+end
+
+function setup()
+    local player = mod.patch.get_type("Terraria", "Player")
+    stat_mana     = mod.patch.get_field(player, "statMana")
+    stat_mana_max = mod.patch.get_field(player, "statManaMax")
+    mod.patch.install_hook(
+        mod.patch.get_method(player, "ResetEffects", 0),
+        { postfix = lock_mana })
+end
+
+todo_list = { "setup" }
+```
 
 ### 句柄生命周期
 
@@ -266,6 +315,24 @@ mod.net.tile_square(x, y, w, h)         -- 请求服务端同步区域
 - 客户端只发包，世界修改在服务端做；
 - 服务端直接 `WorldGen.KillTile` **不会自动广播**（原版靠 `Player.PickTile`），批量改图后要显式 `mod.net.tile_square(...)`；
 - 消息走原版已知消息号 + magic 校验，未知消息号在 PC↔Android 传输层会被丢弃。
+
+完整骨架（客户端请求 → 服务端执行并广播）：
+
+```lua
+-- 客户端：某处点击后，请求服务端挖掉 (x, y)
+function request_mine(x, y)
+    if mod.net.mode() == 1 then                      -- 只有客户端才发包
+        mod.net.send_to_server("mine", x .. "," .. y)
+    end
+end
+
+-- 服务端：收到请求后执行（这段只在服务端运行）
+mod.net.on_receive(function(channel, payload, player)
+    if channel ~= "mine" then return end
+    local sx, sy = payload:match("^(%d+),(%d+)$")
+    mod.net.tile_kill(tonumber(sx), tonumber(sy))     -- 服务端权威执行，并广播给所有客户端
+end)
+```
 
 ## 常见陷阱
 

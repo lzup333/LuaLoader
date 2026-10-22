@@ -54,15 +54,16 @@ todo_list = { "setup" }   -- 启动时按顺序执行这些函数
 ```lua
 local stat_mana, stat_mana_max
 
-function lock_mana(p)
-    mod.patch.set_field_value(stat_mana, p,
+function lock_mana(p)                                    -- p = 这个 Player
+    mod.patch.set_field_value(stat_mana, p,              -- 写字段：魔力 = 上限
         mod.patch.get_field_value(stat_mana_max, p, "int32"), "int32")
 end
 
 function setup()
-    local player = mod.patch.get_type("Terraria", "Player")
-    stat_mana     = mod.patch.get_field(player, "statMana")
+    local player = mod.patch.get_type("Terraria", "Player")  -- 取类型
+    stat_mana     = mod.patch.get_field(player, "statMana")  -- 取字段
     stat_mana_max = mod.patch.get_field(player, "statManaMax")
+    -- 钩住 Player.ResetEffects，原方法跑完后再执行 lock_mana
     mod.patch.install_hook(mod.patch.get_method(player, "ResetEffects", 0), { postfix = lock_mana })
 end
 

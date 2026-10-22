@@ -7,12 +7,14 @@
 ```lua
 local speed, name = 3.0, ""
 
-function mod.on_gui()
+function mod.on_gui()                              -- 每帧回调一次
     mod.gui.text("我的 Mod")
     mod.gui.separator()
-    speed = mod.gui.slider("速度", speed, 1.0, 10.0)
-    name  = mod.gui.input_text("名字", name)   -- 点击弹底部虚拟键盘
-    if mod.gui.button("点我") then mod.info("clicked") end
+    speed = mod.gui.slider("速度", speed, 1.0, 10.0)  -- 返回新值，直接写回
+    name  = mod.gui.input_text("名字", name)          -- 点击弹底部虚拟键盘
+    if mod.gui.button("点我") then                    -- 本帧被点击返回 true
+        mod.info("clicked")
+    end
 end
 ```
 
