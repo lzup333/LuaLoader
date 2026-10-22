@@ -2,7 +2,7 @@
  * LuaLoader - lua_api internal
  * Copyright (C) 2026 lzup333
  *
- * lua_api 各模块之间共享的声明。实现分布在 src/api/*.cpp。
+ * lua_api 各模块之间共享的声明。实现分布在 src/api 目录下的各编译单元。
  *******************************************************************************/
 
 #pragma once
