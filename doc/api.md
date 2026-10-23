@@ -267,7 +267,7 @@ mod.item.register{
 
 - `defaults` 字段名与 `Terraria.Item` 一致；值类型不符会打日志忽略。函数形式 `function(item) end`（非托管句柄）。
 - 语言键：`en/de/it/fr/es/ru/zh/pt/pl/ja/ko/zh-tw`。
-- PNG 放 `Resources/Image/` 或 `Resources/lib/Image/`；解码为 RGBA32（Android 自动 Y 翻转）。
+- PNG 放 `Resources/Image/` 或 `Resources/lib/Image/`；解码为 RGBA32（Android 自动 Y 翻转,因为不翻转贴图就是反的！翻转是修正处理）。
 - `mod.item.runtime_id(name)` 取内核分配的 ID（注册阶段通常为 -1）。
 
 ## `mod.projectile`：自定义弹幕
