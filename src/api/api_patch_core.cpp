@@ -1,6 +1,21 @@
 #include "api_internal.hpp"
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace lualoader::lua_api {
+
+    /// patchlib_string_cstr 在 Windows 上返回 .NET Marshal.AllocHGlobal 的内存
+    /// （LocalAlloc），不能用 MinGW 的 free() 释放，否则会破坏堆。
+    static void free_managed_cstr(char *p) {
+        if (!p) return;
+#if defined(_WIN32)
+        LocalFree(static_cast<HLOCAL>(p));
+#else
+        free(p);
+#endif
+    }
 
     // ========================================================================
     // Patchlib: 类型 / 字段 / 方法
@@ -149,7 +164,7 @@ namespace lualoader::lua_api {
             return;
         }
         lua_pushstring(L, c);
-        free(c);
+        free_managed_cstr(c);
     }
 
     /// 非静态字段必须给 instance。
