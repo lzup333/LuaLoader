@@ -460,11 +460,36 @@
             if (g_gfx.sb_begin_args == 0) {
                 patchlib_method_invoke_args(g_gfx.m_sb_begin, g_sb, nullptr, nullptr);
             } else if (g_gfx.sb_begin_args == 2) {
+#if defined(_WIN32)
+                // Windows/XNA: Begin(SpriteSortMode, BlendState)，第二个参数是
+                // 引用类型，必须传 null 句柄，不能传 bool。
+                int sort_mode = 0; // SpriteSortMode.Deferred
+                patch_handle_t null_blend = nullptr;
+                void *args[2] = {&sort_mode, &null_blend};
+                patchlib_method_invoke_args(g_gfx.m_sb_begin, g_sb, nullptr, args);
+#else
                 int sort_mode = 0; // SpriteSortMode.Deferred
                 unsigned char deferred = 1;
                 void *args[2] = {&sort_mode, &deferred};
                 patchlib_method_invoke_args(g_gfx.m_sb_begin, g_sb, nullptr, args);
+#endif
             }
+#if defined(_WIN32)
+            else if (g_gfx.sb_begin_args == 8) {
+                // Begin(SpriteSortMode, BlendState, SamplerState, DepthStencilState,
+                //       RasterizerState, Effect, Matrix?, bool)
+                int sort_mode = 0; // SpriteSortMode.Deferred
+                patch_handle_t null_state = nullptr;
+                NullableMat no_transform{};
+                no_transform.has_value = 0;
+                unsigned char deferred = 1;
+                void *args[8] = {
+                    &sort_mode, &null_state, &null_state, &null_state,
+                    &null_state, &null_state, &no_transform, &deferred
+                };
+                patchlib_method_invoke_args(g_gfx.m_sb_begin, g_sb, nullptr, args);
+            }
+#endif
         }
 
         void sb_end() {
