@@ -123,7 +123,11 @@ namespace lualoader::lua_api {
     void add_patch_struct(lua_State *L);
     void add_patch_hook(lua_State *L);
     void add_net(lua_State *L);
+    void add_recipe(lua_State *L);
     void add_item(lua_State *L);
     void add_projectile(lua_State *L);
+
+    // ---- 配方清理 ----
+    void unregister_recipes(lua_mod_handle_t *handle);
 
 } // namespace lualoader::lua_api

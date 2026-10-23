@@ -80,6 +80,10 @@ namespace lualoader::lua_api {
         add_net(L);
         lua_setfield(L, -2, "net");
 
+        lua_newtable(L);
+        add_recipe(L);
+        lua_setfield(L, -2, "recipe");
+
 #ifdef LUALOADER_GUI
         lualoader::gui::register_api(L, handle);
 #endif

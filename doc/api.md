@@ -298,6 +298,25 @@ AI 模式：
 
 `mod.projectile.runtime_id(name)` 取实时 ID。卸载 Mod 自动注销。
 
+## `mod.recipe`：添加任意配方
+
+不限于自定义物品，**原版物品**也可以加配方：
+
+```lua
+mod.recipe.add{
+    result    = 9,                              -- 产物 id，或 { id = 9, count = 10 }
+    materials = { { id = 20, count = 5 },       -- 材料：{ id, count }
+                  { id = 22, count = 2 } },
+    station   = 18,                             -- 合成站方块 id；-1 = 无
+}
+
+```
+
+- 可以在 `setup()` 里调用；配方会在**下一次游戏重建配方表**（进世界/加入服务器/换语言）时生效。
+- 卸载 Mod 时自动清理它注册的配方，不需要手动删除。
+- 一条配方只写一个产物；要多个产物就调多次 `add`。
+- `materials` 至少一项；材料数量上限与游戏一致（通常 15 种）。
+
 ## `mod.net`：联机同步（服务端权威）
 
 ```lua
