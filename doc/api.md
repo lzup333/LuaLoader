@@ -302,8 +302,8 @@ AI 模式：
 
 ```lua
 mod.net.mode()                          -- 0 单机 / 1 客户端 / 2 专用服 / 3 开房
-mod.net.send_to_server(channel, payload)             -- 客户端 -> 服务端
-mod.net.on_receive(function(channel, payload, player) end)  -- 只在服务端触发
+mod.net.send(channel, payload)          -- 客户端 -> 服务端发消息
+mod.net.on(channel, function(payload, player) end)  -- 服务端按频道路由到回调
 mod.net.tile_kill(x, y[, no_item])      -- 请求服务端挖图格
 mod.net.tile_square(x, y, w, h)         -- 请求服务端同步区域
 ```
@@ -321,16 +321,15 @@ mod.net.tile_square(x, y, w, h)         -- 请求服务端同步区域
 ```lua
 -- 客户端：某处点击后，请求服务端挖掉 (x, y)
 function request_mine(x, y)
-    if mod.net.mode() == 1 then                      -- 只有客户端才发包
-        mod.net.send_to_server("mine", x .. "," .. y)
+    if mod.net.mode() == 1 then            -- 只有客户端才发包
+        mod.net.send("mine", x .. "," .. y)
     end
 end
 
--- 服务端：收到请求后执行（这段只在服务端运行）
-mod.net.on_receive(function(channel, payload, player)
-    if channel ~= "mine" then return end
+-- 服务端：给 "mine" 频道注册回调（这段只在服务端运行）
+mod.net.on("mine", function(payload, player)
     local sx, sy = payload:match("^(%d+),(%d+)$")
-    mod.net.tile_kill(tonumber(sx), tonumber(sy))     -- 服务端权威执行，并广播给所有客户端
+    mod.net.tile_kill(tonumber(sx), tonumber(sy))   -- 服务端权威执行，并广播给所有客户端
 end)
 ```
 

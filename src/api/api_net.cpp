@@ -43,9 +43,9 @@ namespace lualoader::lua_api {
         return 0;
     }
 
-    /// mod.net.send_to_server(channel, payload)
-    /// 客户端 -> 服务端；服务端收到后调用该 Mod 的 on_receive 回调。
-    static int l_net_send_to_server(lua_State *L) {
+    /// mod.net.send(channel, payload)
+    /// 客户端 -> 服务端；服务端收到后按频道路由到 mod.net.on 注册的回调。
+    static int l_net_send(lua_State *L) {
         lua_mod_handle_t *h = get_handle(L);
         if (!h) return luaL_error(L, "mod handle missing");
         const char *channel = luaL_checkstring(L, 1);
@@ -56,23 +56,36 @@ namespace lualoader::lua_api {
         return 0;
     }
 
-    /// mod.net.on_receive(function(channel, payload, player) end)
-    /// 只在服务端（房主/专用服）触发。
-    static int l_net_on_receive(lua_State *L) {
+    /// mod.net.on(channel, function(payload, player) end)
+    /// 给某个频道注册处理回调，只在服务端（房主/专用服）触发。
+    /// 传 nil 作为第二个参数可移除该频道的回调。
+    static int l_net_on(lua_State *L) {
         lua_mod_handle_t *h = get_handle(L);
         if (!h) return luaL_error(L, "mod handle missing");
-        if (!lua_isfunction(L, 1))
-            return luaL_error(L, "on_receive 需要一个函数");
-        if (h->net_recv_ref != LUA_NOREF)
-            luaL_unref(L, LUA_REGISTRYINDEX, h->net_recv_ref);
-        h->net_recv_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        const char *channel = luaL_checkstring(L, 1);
+
+        auto it = h->net_recv_refs.find(channel);
+        if (lua_isnil(L, 2)) {                       // on(channel, nil) = 移除
+            if (it != h->net_recv_refs.end()) {
+                luaL_unref(L, LUA_REGISTRYINDEX, it->second);
+                h->net_recv_refs.erase(it);
+            }
+            return 0;
+        }
+        if (!lua_isfunction(L, 2))
+            return luaL_error(L, "mod.net.on 第二个参数需要函数或 nil");
+
+        if (it != h->net_recv_refs.end())            // 重复注册 = 覆盖
+            luaL_unref(L, LUA_REGISTRYINDEX, it->second);
+        lua_pushvalue(L, 2);
+        h->net_recv_refs[channel] = luaL_ref(L, LUA_REGISTRYINDEX);
         return 0;
     }
 
     static const luaL_Reg mod_net_functions[] = {
-            {"mode",           l_net_mode},
-            {"send_to_server", l_net_send_to_server},
-            {"on_receive",     l_net_on_receive},
+            {"mode",        l_net_mode},
+            {"send",        l_net_send},
+            {"on",          l_net_on},
             {"tile_kill",   l_net_tile_kill},
             {"tile_square", l_net_tile_square},
             {nullptr,       nullptr},

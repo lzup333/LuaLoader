@@ -212,23 +212,25 @@ namespace {
     bool g_ml_inited = false; // init_ml 幂等（内核可能调用两次）
 } // namespace
 
-/// 内核收到的 Mod 消息 → 对应 Mod 的 mod.net.on_receive(channel, payload, player)
+/// 内核收到的 Mod 消息 → 对应 Mod 的 mod.net.on(channel)(payload, player)
 static void on_mod_message(const char *mod_id, const char *channel,
                            const uint8_t *data, int len, int player) {
     if (!mod_id) return;
     const auto it = lualoader::core::lua_mod_handles.find(mod_id);
     if (it == lualoader::core::lua_mod_handles.end() || !it->second) return;
     lualoader::lua_mod_handle_t *h = it->second;
-    if (!h->L || h->net_recv_ref == LUA_NOREF) return;
+    if (!h->L) return;
+
+    const auto cb = h->net_recv_refs.find(channel ? channel : "");
+    if (cb == h->net_recv_refs.end()) return;   // 该频道没注册回调，忽略
 
     lua_State *L = h->L;
-    lua_rawgeti(L, LUA_REGISTRYINDEX, h->net_recv_ref);
-    lua_pushstring(L, channel ? channel : "");
+    lua_rawgeti(L, LUA_REGISTRYINDEX, cb->second);
     lua_pushlstring(L, reinterpret_cast<const char *>(data), (size_t) len);
     lua_pushinteger(L, player);
-    if (lua_pcall(L, 3, 0, 0) != LUA_OK) {
+    if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
         const char *err = lua_tostring(L, -1);
-        LOG_ERROR("[net] {}: on_receive failed: {}", mod_id, err ? err : "?");
+        LOG_ERROR("[net] {}: on({}) failed: {}", mod_id, channel, err ? err : "?");
         lua_pop(L, 1);
     }
 }

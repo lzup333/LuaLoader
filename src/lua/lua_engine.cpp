@@ -577,6 +577,7 @@ namespace lualoader::lua_engine {
         handle->init_ref = LUA_NOREF;
         handle->cleanup_ref = LUA_NOREF;
         handle->gui_ref = LUA_NOREF;
+        handle->net_recv_refs.clear();
     }
 
 } // namespace lualoader::lua_engine
