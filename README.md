@@ -37,6 +37,9 @@ todo_list = { "setup" }   -- 启动时按顺序执行这些函数
 
 加载器只跑入口脚本；其它 `.lua` 用 `require("文件名")` 按需加载（`package.path` 已含 Mod 目录）。
 
+`Info.json` / `luamod.json` / `Manifest.json` 三个清单文件的完整模板和字段说明见
+[`doc/api.md` 的「最小 Mod」](doc/api.md#最小-mod)。
+
 ## 能力一览
 
 | 能力 | 入口 | 说明 |

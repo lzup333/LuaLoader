@@ -6,9 +6,9 @@
 
 ```
 my_mod/
-├── Info.json            # Mod 元信息
-├── Manifest.json        # parentLoader = "lzup333.lualoader"
-├── luamod.json          # { "main": "main.lua" }
+├── Info.json
+├── Manifest.json
+├── luamod.json
 └── Resources/lib/main.lua
 ```
 
@@ -21,6 +21,94 @@ end
 
 todo_list = { "setup" }   -- 启动时按顺序执行清单里的函数
 ```
+
+### Info.json（管理器展示与兼容性）
+
+把 `pkgId`、`name`、`author`、版本号和 `support` 改成自己的即可，其余可照抄：
+
+```json
+{
+  "pkgId": "lzup.lua.hello",
+  "name": "你好世界 (Hello)",
+  "author": "你的名字",
+  "version": "1.0.0",
+  "versionCode": 1,
+  "brieflyDescribe": "一句话简介",
+  "description": "更完整的描述。",
+  "features": [],
+  "sizeCategory": "TINY",
+  "targetGameVersion": "1.4.5.8",
+  "minGameVersion": "1.4.5.8",
+  "maxGameVersion": "1.4.5.8",
+  "support": {
+    "android": { "arm64": true,  "arm": true,  "x64": false, "x86": false },
+    "windows": { "arm64": false, "arm": false, "x64": true,  "x86": true  },
+    "linux":   { "arm64": false, "arm": false, "x64": true,  "x86": true  },
+    "mac":     { "arm64": false, "arm": false, "x64": false, "x86": false },
+    "ios":     { "arm64": false, "arm": false, "x64": false, "x86": false }
+  },
+  "dependence": [],
+  "conflicts": [],
+  "stableVerified": false,
+  "experimental": false,
+  "deprecated": false,
+  "hasExtendedContent": false
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `pkgId` | Mod 唯一 id，建议 `作者.lua.名字`；必须与 `luamod.json` 的 `pkg_id` 一致 |
+| `versionCode` | 整数。**每次发版必须递增**，管理器据此判断有更新 |
+| `support` | 声明支持的平台/架构，不支持的平台不会安装 |
+| `dependence` / `conflicts` | 依赖 / 冲突的 Mod id 数组，没有就留空 |
+| `sizeCategory` | `TINY` / `SMALL` / `MEDIUM` / `LARGE`（展示用） |
+
+### luamod.json（LuaLoader 入口）
+
+```json
+{
+  "main": "main.lua",
+  "pkg_id": "lzup.lua.hello",
+  "version": "1.0.0",
+  "version_code": 1,
+  "api_version": 1,
+  "multiplayer_safe": true
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `main` | 入口脚本，相对 `Resources/lib/`，通常就是 `main.lua` |
+| `pkg_id` | 必须与 `Info.json` 的 `pkgId` 完全一致 |
+| `version` / `version_code` | 与 `Info.json` 的 `version` / `versionCode` 保持一致 |
+| `api_version` | LuaLoader API 版本，当前填 `1` |
+| `multiplayer_safe` | 是否声明联机安全 |
+
+### Manifest.json（包结构）
+
+```json
+{
+  "type": "Mod",
+  "file": "luamod.json",
+  "parentLoader": "lzup333.lualoader",
+  "resources": "Resources",
+  "modloader": { "type": "null" },
+  "plugins": { "type": "null" },
+  "tefkernel": { "minVersion": "1.0.0" }
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `type` | 固定 `"Mod"` |
+| `file` | 固定 `"luamod.json"` |
+| `parentLoader` | 固定 `"lzup333.lualoader"` |
+| `resources` | 资源目录，固定 `"Resources"` |
+| `modloader` / `plugins` | Lua Mod 固定写 `{"type":"null"}` |
+| `tefkernel.minVersion` | 要求的最低内核版本 |
+
+> `pkgId` / `pkg_id` 写错通常不会立即报错，但管理器会把它当成另一个 Mod——存档、配置、更新都会对不上。
 
 ## 生命周期
 
