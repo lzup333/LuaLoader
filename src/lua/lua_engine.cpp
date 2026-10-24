@@ -568,6 +568,7 @@ namespace lualoader::lua_engine {
         if (!handle) return;
         lua_api::uninstall_all_hooks(handle);
         lua_api::unregister_items(handle);
+        lua_api::unregister_buffs(handle);
         lua_api::unregister_projectiles(handle);
         lua_api::unregister_recipes(handle);
         if (handle->L) {

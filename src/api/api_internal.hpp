@@ -46,6 +46,7 @@ extern "C" {
 #include "tefkernel/terraria/asset.h"
 #include "tefkernel/terraria/item_manager.h"
 #include "tefkernel/terraria/projectile_manager.h"
+#include "tefkernel/terraria/buff_manager.h"
 #include "tefkernel/terraria/netmanager.h"
 #include "tefkernel/terraria/language_manager.h"
 #include "tefkernel/terraria/recipe_manager.h"
@@ -126,8 +127,10 @@ namespace lualoader::lua_api {
     void add_recipe(lua_State *L);
     void add_item(lua_State *L);
     void add_projectile(lua_State *L);
+    void add_buff(lua_State *L);
 
     // ---- 配方清理 ----
     void unregister_recipes(lua_mod_handle_t *handle);
+    void unregister_buffs(lua_mod_handle_t *handle);
 
 } // namespace lualoader::lua_api

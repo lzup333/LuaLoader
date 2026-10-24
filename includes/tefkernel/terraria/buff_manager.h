@@ -1,0 +1,145 @@
+/*******************************************************************************
+ * tefkernel - buff_manager
+ *
+ * 自定义 Buff：注册 / ID 分配 / 贴图 / 名称与说明 / 每帧回调。
+ * 结构与 item_manager、projectile_manager 同构，便于维护。
+ *
+ * 设计要点：
+ *   · ID：base = BuffID.Count（原版数量），runtime_id = base + 注册表下标；
+ *     注册表按 (loader, mod, name) 排序后分配，保证客户端/服务端一致。
+ *   · 扩容：TextureAssets.Buff[]、Main 上按 buff type 索引的静态表、
+ *     BuffID.Sets.*、Lang._buffNameCache/_buffDescriptionCache 必须一起扩容，
+ *     否则 GetBuffName / UpdateBuffs / DrawBuffIcon 都会越界。
+ *   · buffImmune 是 Player/NPC 的实例字段，按 type 索引；实例会在进世界时重建，
+ *     所以在 AddBuff / FindBuffIndex 入口按需补齐。
+ *   · 回调：AddBuff 之后 on_apply；UpdateBuffs 之后 on_update（每帧，仅激活时）。
+ *   · 存档：原版存档不存自定义 Buff（Main.buffNoSave = true），改由内核的
+ *     plr.tef 伴生存档按 (loader/mod/name) 存读，卸载 Mod 也不会残留无效 ID。
+ *******************************************************************************/
+#ifndef TEFFKERNEL_TERRARIA_BUFF_MANAGER_H
+#define TEFFKERNEL_TERRARIA_BUFF_MANAGER_H
+
+#include <stdbool.h>
+
+#include "../tef_api.h"
+#include "../patchlib/type.h"
+#include "../tefstd/vector.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct terraria_buff_handle_t terraria_buff_handle_t;
+
+typedef struct terraria_buff_ops_t {
+    /**
+     * @brief 最早初始化（注册回调等前置操作），仅执行一次
+     */
+    void (*early_init)(terraria_buff_handle_t *current);
+
+    /**
+     * @brief 静态初始化（ID 分配完成后调用）
+     */
+    void (*init_static)(terraria_buff_handle_t *current);
+
+    /**
+     * @brief Buff 被成功挂到玩家身上时调用（Aura/一次性生效用）
+     * @warning player / 句柄由内核管理，不要持有
+     */
+    void (*apply)(terraria_buff_handle_t *current, patch_handle_t player, int time);
+
+    /**
+     * @brief 每帧回调：玩家身上该 Buff 仍激活时调用。
+     *
+     * 原版 Buff 的效果是写死在 Player.UpdateBuffs 里的，自定义 Buff 想要
+     * 实际效果（加属性、扣血、召唤弹幕等）必须在这里实现。
+     *
+     * @param player      玩家实例
+     * @param buff_index  该 Buff 在玩家 buffType[] 里的槽位
+     * @warning instance 由 hook 管理器释放，不要持有
+     */
+    void (*update)(terraria_buff_handle_t *current, patch_handle_t player, int buff_index);
+
+    /**
+     * @brief 获取图标纹理实例（Asset<Texture2D>），为 NULL 时用占位图
+     */
+    patch_handle_t (*get_texture)(terraria_buff_handle_t *current);
+} terraria_buff_ops_t;
+
+typedef struct terraria_buff_handle_t {
+    const char *parent_modloader_id;   //<< 所属 modloader id
+    const char *parent_id;             //<< 所属 mod id
+    const char *internal_name;         //<< 内部名称
+    int runtime_id;                    //<< 由内核分配
+
+    /* 显示/行为标志（对应 Main 上的同名静态表） */
+    bool debuff;                       //<< 减益：图标红框、优先被顶掉
+    bool no_time_display;              //<< 不显示剩余时间
+    bool pvp;                          //<< PvP 专属：非 PvP 目标不生效
+    bool light_pet;                    //<< 光源宠物（同类互斥）
+    bool vanity_pet;                   //<< 观赏宠物（同类互斥）
+
+    patch_handle_t texture;            //<< 图标 Texture2D（内核持有，不写进 TextureAssets.Buff）
+    void *texture_pin;                 //<< Android: il2cpp GCHandle，防止图标被 GC 回收
+
+    terraria_buff_ops_t buff_ops;
+} terraria_buff_handle_t;
+
+/**
+ * @brief 注册 Buff
+ * @warning 需在 Main.Initialize 之前调用（否则分配不到有效 runtime_id）
+ */
+DEFINE_FUNCTION(bool, terraria_buff_manager_register_buff,
+                terraria_buff_handle_t* buff_handle)
+
+/**
+ * @brief 通过运行时 ID 注销
+ */
+DEFINE_FUNCTION(bool, terraria_buff_manager_unregister_buff_by_id, int runtime_id)
+
+/**
+ * @brief 取自定义 Buff 句柄（越界/未注册返回 NULL）
+ */
+DEFINE_FUNCTION(terraria_buff_handle_t*, terraria_buff_manager_get_buff, int runtime_id)
+
+/**
+ * @brief 取全部自定义 Buff（tefstd_vector_t<terraria_buff_handle_t*>）
+ */
+DEFINE_FUNCTION(tefstd_vector_t*, terraria_buff_manager_get_buffs)
+
+/**
+ * @brief 按 loader/mod/name 查找
+ */
+DEFINE_FUNCTION(terraria_buff_handle_t*, terraria_buff_manager_find_buff,
+                const char* loader, const char* mod, const char* name)
+
+/**
+ * @brief 原版 BuffID.Count（仅用于 runtime_id 起始值，不写进游戏 buffType）
+ */
+DEFINE_FUNCTION(int, terraria_buff_id_get_count)
+
+/**
+ * @brief 给玩家挂上自定义 Buff（内核自己计时，不写 buffType）
+ * @param time 帧数（60 = 1 秒）；已存在时取较长者
+ * @return 剩余帧数，失败返回 -1
+ */
+DEFINE_FUNCTION(int, terraria_buff_manager_add, terraria_buff_handle_t* buff_handle,
+                patch_handle_t player, int time)
+
+/**
+ * @brief 玩家身上该 Buff 的剩余帧数（未挂上返回 0）
+ */
+DEFINE_FUNCTION(int, terraria_buff_manager_time, terraria_buff_handle_t* buff_handle,
+                patch_handle_t player)
+
+/**
+ * @brief 立刻移除
+ */
+DEFINE_FUNCTION(void, terraria_buff_manager_remove, terraria_buff_handle_t* buff_handle,
+                patch_handle_t player)
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* TEFFKERNEL_TERRARIA_BUFF_MANAGER_H */

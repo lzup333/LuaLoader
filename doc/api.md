@@ -386,6 +386,36 @@ AI 模式：
 
 `mod.projectile.runtime_id(name)` 取实时 ID。卸载 Mod 自动注销。
 
+## `mod.buff`：自定义 Buff
+
+```lua
+mod.buff.register{
+    name       = "lua_regen",      -- 必填，同 Mod 内唯一
+    texture    = "buff.png",       -- 图标 PNG；不放用内核占位图
+    debuff     = false,            -- 减益：图标红框、优先被顶掉
+    no_time    = false,            -- 不显示剩余时间
+    pvp        = false,            -- 仅 PvP 生效
+    light_pet  = false,            -- 光源宠物（同类互斥）
+    vanity_pet = false,            -- 观赏宠物（同类互斥）
+    apply  = function(player, time) end,        -- 被挂上时
+    update = function(player, buff_index) end,  -- 每帧，Buff 激活时
+    language = { en = { name = "Lua Regen", description = "+5 life/s" },
+                 zh = { name = "Lua 再生", description = "每秒回复 5 点生命" } },
+}
+```
+
+- **效果要自己在 `update` 里做**：原版 Buff 的效果写死在 `Player.UpdateBuffs` 里，自定义 Buff 原版不知道；
+  `update` 每帧回调一次，`buff_index` 是该 Buff 在 `buffType[]` 中的槽位（一般用不到）。
+- `apply` 在 AddBuff **成功**后调用（目标免疫 / PvP 转发 / 时长为 0 都不会触发）；
+  同一 Buff 重复挂会刷新时长并再次调用。
+- 名称与说明走 `language`；缺省时显示本地化键名。`mod.buff.runtime_id(name)` 取实时 ID。
+- **存档**：自定义 Buff 不写进原版 `.plr`（避免卸载 Mod 后残留 401+ ID 越界），
+  由内核的伴生文件 `<角色>.plr.tef` 按 `(modloader/mod/name)` 存读，
+  换 ID、增删其它 Mod 都不受影响；卸载本 Mod 则该 Buff 直接丢弃。
+- **联机**：Buff 类型走 `ushort`，自定义 ID 可以正常同步；但服务端也要装同一个 Mod
+  （否则服务端不认识该 ID，`Player.AddBuff` 会越界）。
+- 卸载 Mod 自动注销。
+
 ## `mod.recipe`：添加任意配方
 
 不限于自定义物品，**原版物品**也可以加配方：
