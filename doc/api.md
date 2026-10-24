@@ -58,7 +58,7 @@ todo_list = { "setup" }   -- 启动时按顺序执行清单里的函数
 
 | 字段 | 说明 |
 |---|---|
-| `pkgId` | Mod 唯一 id，建议 `作者.lua.名字`；必须与 `luamod.json` 的 `pkg_id` 一致 |
+| `pkgId` | Mod 唯一 id；必须与 `luamod.json` 的 `pkg_id` 一致 |
 | `versionCode` | 整数。**每次发版必须递增**，管理器据此判断有更新 |
 | `support` | 声明支持的平台/架构，不支持的平台不会安装 |
 | `dependence` / `conflicts` | 依赖 / 冲突的 Mod id 数组，没有就留空 |
