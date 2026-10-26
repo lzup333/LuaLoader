@@ -24,6 +24,9 @@ namespace lualoader::lua_api {
         int defaults_ref;
         int ai_ref;
         int on_kill_ref;
+        int hit_npc_ref;
+        int hit_player_ref;
+        int tile_collide_ref;
         std::string texture_path;
         std::vector<unsigned char> tex_pixels;
         int tex_w, tex_h;
@@ -70,6 +73,52 @@ namespace lualoader::lua_api {
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->on_kill_ref);
         push_handle(L, inst);
         pcall_log(L, 1, 0, "mod.projectile.on_kill");
+    }
+
+    static void lua_projectile_hit_npc(terraria_projectile_handle_t *current,
+                                       const patch_handle_t inst, const patch_handle_t npc,
+                                       const int damage, const int hit_direction,
+                                       const bool crit) {
+        LuaProjectileEntry *e = projectile_from_handle(current);
+        if (!e || !inst || e->hit_npc_ref == LUA_NOREF || !e->L) return;
+        lua_State *L = e->L;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, e->hit_npc_ref);
+        push_handle(L, inst);
+        push_handle(L, npc);
+        lua_pushinteger(L, damage);
+        lua_pushinteger(L, hit_direction);
+        lua_pushboolean(L, crit);
+        pcall_log(L, 5, 0, "mod.projectile.on_hit_npc");
+    }
+
+    static void lua_projectile_hit_player(terraria_projectile_handle_t *current,
+                                          const patch_handle_t inst, const patch_handle_t player,
+                                          const int damage, const int hit_direction,
+                                          const bool pvp, const bool crit) {
+        LuaProjectileEntry *e = projectile_from_handle(current);
+        if (!e || !inst || e->hit_player_ref == LUA_NOREF || !e->L) return;
+        lua_State *L = e->L;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, e->hit_player_ref);
+        push_handle(L, inst);
+        push_handle(L, player);
+        lua_pushinteger(L, damage);
+        lua_pushinteger(L, hit_direction);
+        lua_pushboolean(L, pvp);
+        lua_pushboolean(L, crit);
+        pcall_log(L, 6, 0, "mod.projectile.on_hit_player");
+    }
+
+    static void lua_projectile_tile_collide(terraria_projectile_handle_t *current,
+                                            const patch_handle_t inst,
+                                            const float old_vx, const float old_vy) {
+        LuaProjectileEntry *e = projectile_from_handle(current);
+        if (!e || !inst || e->tile_collide_ref == LUA_NOREF || !e->L) return;
+        lua_State *L = e->L;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, e->tile_collide_ref);
+        push_handle(L, inst);
+        lua_pushnumber(L, old_vx);
+        lua_pushnumber(L, old_vy);
+        pcall_log(L, 3, 0, "mod.projectile.on_tile_collide");
     }
 
     static patch_handle_t lua_projectile_get_texture(terraria_projectile_handle_t *current) {
@@ -130,6 +179,9 @@ namespace lualoader::lua_api {
         e->defaults_ref = LUA_NOREF;
         e->ai_ref = LUA_NOREF;
         e->on_kill_ref = LUA_NOREF;
+        e->hit_npc_ref = LUA_NOREF;
+        e->hit_player_ref = LUA_NOREF;
+        e->tile_collide_ref = LUA_NOREF;
         e->tex_w = e->tex_h = 0;
         e->tex_tried = false;
         e->registered = false;
@@ -199,6 +251,21 @@ namespace lualoader::lua_api {
         if (lua_isfunction(L, -1)) e->on_kill_ref = luaL_ref(L, LUA_REGISTRYINDEX);
         else lua_pop(L, 1);
 
+        lua_getfield(L, 1, "on_hit_npc");
+        if (!lua_isfunction(L, -1)) { lua_pop(L, 1); lua_getfield(L, 1, "hit_npc"); }
+        if (lua_isfunction(L, -1)) e->hit_npc_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        else lua_pop(L, 1);
+
+        lua_getfield(L, 1, "on_hit_player");
+        if (!lua_isfunction(L, -1)) { lua_pop(L, 1); lua_getfield(L, 1, "hit_player"); }
+        if (lua_isfunction(L, -1)) e->hit_player_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        else lua_pop(L, 1);
+
+        lua_getfield(L, 1, "on_tile_collide");
+        if (!lua_isfunction(L, -1)) { lua_pop(L, 1); lua_getfield(L, 1, "tile_collide"); }
+        if (lua_isfunction(L, -1)) e->tile_collide_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        else lua_pop(L, 1);
+
         if (no_ai && e->ai_ref != LUA_NOREF)
             LOG_WARN("[mod.projectile] {}: 同时给了 no_ai 和 ai，ai 不会生效", proj_name);
         if (no_ai && vanilla_ai)
@@ -228,11 +295,21 @@ namespace lualoader::lua_api {
         e->projectile.projectile_ops.get_texture = lua_projectile_get_texture;
         e->projectile.projectile_ops.on_kill = (e->on_kill_ref != LUA_NOREF)
                 ? lua_projectile_on_kill : nullptr;
+        e->projectile.projectile_ops.on_hit_npc = (e->hit_npc_ref != LUA_NOREF)
+                ? lua_projectile_hit_npc : nullptr;
+        e->projectile.projectile_ops.on_hit_player = (e->hit_player_ref != LUA_NOREF)
+                ? lua_projectile_hit_player : nullptr;
+        e->projectile.projectile_ops.on_tile_collide = (e->tile_collide_ref != LUA_NOREF)
+                ? lua_projectile_tile_collide : nullptr;
 
         if (!terraria_projectile_manager_register_projectile(&e->projectile)) {
             LOG_ERROR("[mod.projectile] {}: 注册失败", proj_name);
             if (e->defaults_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->defaults_ref);
             if (e->ai_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->ai_ref);
+            if (e->on_kill_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->on_kill_ref);
+            if (e->hit_npc_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->hit_npc_ref);
+            if (e->hit_player_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->hit_player_ref);
+            if (e->tile_collide_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->tile_collide_ref);
             delete e;
             lua_pushnil(L);
             return 1;
@@ -279,6 +356,14 @@ namespace lualoader::lua_api {
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->defaults_ref);
                 if (e->ai_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->ai_ref);
+                if (e->on_kill_ref != LUA_NOREF)
+                    luaL_unref(handle->L, LUA_REGISTRYINDEX, e->on_kill_ref);
+                if (e->hit_npc_ref != LUA_NOREF)
+                    luaL_unref(handle->L, LUA_REGISTRYINDEX, e->hit_npc_ref);
+                if (e->hit_player_ref != LUA_NOREF)
+                    luaL_unref(handle->L, LUA_REGISTRYINDEX, e->hit_player_ref);
+                if (e->tile_collide_ref != LUA_NOREF)
+                    luaL_unref(handle->L, LUA_REGISTRYINDEX, e->tile_collide_ref);
             }
             delete e;
             g_lua_projectiles.erase(g_lua_projectiles.begin() + static_cast<long>(i));

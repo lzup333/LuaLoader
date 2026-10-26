@@ -59,6 +59,37 @@ typedef struct terraria_projectile_ops_t {
      * @warning instance 由 hook 管理器释放，不要持有
      */
     void (*on_kill)(terraria_projectile_handle_t *current, patch_handle_t instance);
+
+    /**
+     * @brief 弹幕对 NPC 造成伤害后回调（穿透 / 多段命中会按 NPC 逐个调用）
+     * @param npc           被命中的 NPC
+     * @param damage        结算的伤害
+     * @param hit_direction 击退方向（-1 / 0 / 1）
+     * @param crit          是否暴击
+     */
+    void (*on_hit_npc)(terraria_projectile_handle_t *current, patch_handle_t instance,
+                       patch_handle_t npc, int damage, int hit_direction, bool crit);
+
+    /**
+     * @brief 弹幕对玩家造成伤害后回调（PvP 与敌弹打玩家都会触发）
+     * @param player        被命中的玩家
+     * @param damage        结算的伤害
+     * @param hit_direction 击退方向
+     * @param pvp           是否 PvP 伤害
+     * @param crit          是否暴击
+     */
+    void (*on_hit_player)(terraria_projectile_handle_t *current, patch_handle_t instance,
+                          patch_handle_t player, int damage, int hit_direction,
+                          bool pvp, bool crit);
+
+    /**
+     * @brief 弹幕撞到实心块时回调（每个发生碰撞的帧一次）
+     * @param old_vx 碰撞前的水平速度
+     * @param old_vy 碰撞前的垂直速度
+     * @note 想要反弹就自己把 velocity 写回去；直接 Kill() 则本帧不会再结算伤害。
+     */
+    void (*on_tile_collide)(terraria_projectile_handle_t *current, patch_handle_t instance,
+                            float old_vx, float old_vy);
 } terraria_projectile_ops_t;
 
 typedef struct terraria_projectile_handle_t {
