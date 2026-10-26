@@ -28,6 +28,7 @@ namespace lualoader::lua_api {
         std::vector<LuaItemFieldValue> defaults;
         int defaults_ref;
         int can_use_ref;
+        int use_ref;
         std::string texture_path;
         std::vector<unsigned char> tex_pixels;
         int tex_w, tex_h;
@@ -72,6 +73,17 @@ namespace lualoader::lua_api {
             push_handle(L, inst);
             pcall_log(L, 1, 0, "mod.item.defaults"); // pcall_log already consumes errors
         }
+    }
+
+    static void lua_item_use(terraria_item_handle_t *current, patch_handle_t player,
+                             patch_handle_t item) {
+        LuaItemEntry *e = item_from_handle(current);
+        if (!e || !e->L || e->use_ref == LUA_NOREF) return;
+        lua_State *L = e->L;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, e->use_ref);
+        push_handle(L, player);
+        push_handle(L, item);
+        pcall_log(L, 2, 0, "mod.item.use");
     }
 
     static bool lua_item_can_use(terraria_item_handle_t *current, const patch_handle_t player,
@@ -315,6 +327,7 @@ namespace lualoader::lua_api {
         e->name = item_name;
         e->defaults_ref = LUA_NOREF;
         e->can_use_ref = LUA_NOREF;
+        e->use_ref = LUA_NOREF;
         e->tex_w = e->tex_h = 0;
         e->tex_tried = false;
         e->has_recipe = false;
@@ -398,6 +411,11 @@ namespace lualoader::lua_api {
 
         lua_getfield(L, 1, "can_use");
         if (lua_isfunction(L, -1)) e->can_use_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        else lua_pop(L, 1);
+
+        lua_getfield(L, 1, "use");
+        if (!lua_isfunction(L, -1)) { lua_pop(L, 1); lua_getfield(L, 1, "on_use"); }
+        if (lua_isfunction(L, -1)) e->use_ref = luaL_ref(L, LUA_REGISTRYINDEX);
         else lua_pop(L, 1);
 
         // language：{ en = {name=, tooltip=}, zh = {...} }
@@ -486,6 +504,7 @@ namespace lualoader::lua_api {
         e->item.item_ops.init_static = nullptr;
         e->item.item_ops.set_defaults = lua_item_set_defaults;
         e->item.item_ops.can_use = (e->can_use_ref != LUA_NOREF) ? lua_item_can_use : nullptr;
+        e->item.item_ops.use = (e->use_ref != LUA_NOREF) ? lua_item_use : nullptr;
         e->item.item_ops.get_texture = lua_item_get_texture;
 
         if (!terraria_item_manager_register_item(&e->item)) {

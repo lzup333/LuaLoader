@@ -23,6 +23,7 @@ namespace lualoader::lua_api {
         std::vector<LuaItemFieldValue> defaults;
         int defaults_ref;
         int ai_ref;
+        int on_kill_ref;
         std::string texture_path;
         std::vector<unsigned char> tex_pixels;
         int tex_w, tex_h;
@@ -59,6 +60,16 @@ namespace lualoader::lua_api {
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->ai_ref);
         push_handle(L, inst);
         pcall_log(L, 1, 0, "mod.projectile.ai");
+    }
+
+    static void lua_projectile_on_kill(terraria_projectile_handle_t *current,
+                                       const patch_handle_t inst) {
+        LuaProjectileEntry *e = projectile_from_handle(current);
+        if (!e || !inst || e->on_kill_ref == LUA_NOREF || !e->L) return;
+        lua_State *L = e->L;
+        lua_rawgeti(L, LUA_REGISTRYINDEX, e->on_kill_ref);
+        push_handle(L, inst);
+        pcall_log(L, 1, 0, "mod.projectile.on_kill");
     }
 
     static patch_handle_t lua_projectile_get_texture(terraria_projectile_handle_t *current) {
@@ -118,6 +129,7 @@ namespace lualoader::lua_api {
         e->name = proj_name;
         e->defaults_ref = LUA_NOREF;
         e->ai_ref = LUA_NOREF;
+        e->on_kill_ref = LUA_NOREF;
         e->tex_w = e->tex_h = 0;
         e->tex_tried = false;
         e->registered = false;
@@ -182,6 +194,11 @@ namespace lualoader::lua_api {
         } else {
             lua_pop(L, 1);
         }
+        lua_getfield(L, 1, "on_kill");
+        if (!lua_isfunction(L, -1)) { lua_pop(L, 1); lua_getfield(L, 1, "kill"); }
+        if (lua_isfunction(L, -1)) e->on_kill_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        else lua_pop(L, 1);
+
         if (no_ai && e->ai_ref != LUA_NOREF)
             LOG_WARN("[mod.projectile] {}: 同时给了 no_ai 和 ai，ai 不会生效", proj_name);
         if (no_ai && vanilla_ai)
@@ -209,6 +226,8 @@ namespace lualoader::lua_api {
         e->projectile.projectile_ops.set_defaults = lua_projectile_set_defaults;
         e->projectile.projectile_ops.ai = (e->ai_ref != LUA_NOREF) ? lua_projectile_ai : nullptr;
         e->projectile.projectile_ops.get_texture = lua_projectile_get_texture;
+        e->projectile.projectile_ops.on_kill = (e->on_kill_ref != LUA_NOREF)
+                ? lua_projectile_on_kill : nullptr;
 
         if (!terraria_projectile_manager_register_projectile(&e->projectile)) {
             LOG_ERROR("[mod.projectile] {}: 注册失败", proj_name);
