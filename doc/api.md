@@ -370,8 +370,25 @@ mod.projectile.register{
     defaults = { width = 16, height = 16, damage = 18, timeLeft = 300,
                  friendly = true, aiStyle = 0 },
     ai = function(p) end,         -- 写了 ai 默认跳过原版 AI
+
+    on_hit_npc      = function(p, npc, damage, dir, crit) end,          -- 命中 NPC
+    on_hit_player   = function(p, player, damage, dir, pvp, crit) end,  -- 命中玩家
+    on_tile_collide = function(p, old_vx, old_vy) end,                  -- 撞到实心块
+    on_kill         = function(p) end,                                  -- 销毁
 }
 ```
+
+事件回调（都是可选的）：
+
+| 键 | 触发点 | 说明 |
+|---|---|---|
+| `on_hit_npc` / `hit_npc` | `Projectile.Damage()` 内 `NPC.StrikeNPC` 之后 | 穿透/多段命中按 NPC 逐个回调 |
+| `on_hit_player` / `hit_player` | `Damage()` 内 `Player.Hurt` 之后 | PvP 与敌弹打玩家都触发，带 `pvp` |
+| `on_tile_collide` / `tile_collide` | `Projectile.HandleMovement()` 检测到速度被地形修正 | 想反弹就自己写回 `velocity`；回调里 `Kill()` 则本帧不再结算伤害 |
+| `on_kill` / `kill` | `Projectile.Kill()` | 命中、超时、手动 Kill 都会触发 |
+
+> 命中回调**不需要**自己调 `Damage()`：`Projectile.Update()` 每帧都会结算，
+> 自定义 AI 只是替换了原版 `AI()`，不影响伤害流程。
 
 AI 模式：
 
