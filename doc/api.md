@@ -403,6 +403,34 @@ AI 模式：
 
 `mod.projectile.runtime_id(name)` 取实时 ID。卸载 Mod 自动注销。
 
+## `mod.npc`：自定义 NPC
+
+```lua
+mod.npc.register{
+    name    = "lua_slime",
+    texture = "slime.png",
+    frames  = 1,                     -- 竖向帧数，写入 Main.npcFrameCount
+    defaults = {                     -- 或 function(npc) end
+        width = 32, height = 32,
+        lifeMax = 200, life = 200,
+        damage = 10, defense = 0,
+        friendly = true,
+        aiStyle = 0,
+        noTileCollide = true,
+        knockBackResist = 0.5,
+    },
+    vanilla_ai = false,              -- true：原版 AI 先跑，再调 ai
+    ai = function(npc) end,          -- 定义后跳过原版 NPC.AI()，位移/重力自己做
+}
+
+-- 生成（世界坐标），返回 Main.npc 下标
+local index = mod.npc.spawn("lua_slime", x, y)
+```
+
+- 自定义 ID 从 `NPCID.Count`（697）之后分配，不占用原版 ID；
+- 内核会扩容 `TextureAssets.Npc`、`Main.npcFrameCount`、`NPCID.Sets.*`、`Player.npcTypeNoAggro`、`Lang._npcNameCache` 等按 type 索引的表；
+- 名称/图鉴/掉落/Boss 条等还没做，当前是「能生成、能走 AI、能被打」的最小版本。
+
 ## `mod.buff`：自定义 Buff
 
 ```lua

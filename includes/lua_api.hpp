@@ -50,6 +50,7 @@ namespace lualoader::lua_api {
     /// 注销 handle 注册的所有自定义弹幕并释放回调引用
     void unregister_projectiles(lua_mod_handle_t *handle);
     void unregister_buffs(lua_mod_handle_t *handle);
+    void unregister_npcs(lua_mod_handle_t *handle);
 
     /// 清掉该 Mod 通过 mod.recipe 注册的配方
     void unregister_recipes(lua_mod_handle_t *handle);

@@ -81,6 +81,10 @@ namespace lualoader::lua_api {
         lua_setfield(L, -2, "buff");
 
         lua_newtable(L);
+        add_npc(L);
+        lua_setfield(L, -2, "npc");
+
+        lua_newtable(L);
         add_net(L);
         lua_setfield(L, -2, "net");
 

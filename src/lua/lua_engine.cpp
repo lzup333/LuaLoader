@@ -570,6 +570,7 @@ namespace lualoader::lua_engine {
         lua_api::unregister_items(handle);
         lua_api::unregister_buffs(handle);
         lua_api::unregister_projectiles(handle);
+        lua_api::unregister_npcs(handle);
         lua_api::unregister_recipes(handle);
         if (handle->L) {
             lua_close(handle->L);

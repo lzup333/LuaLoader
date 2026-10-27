@@ -38,6 +38,7 @@ set(LUALOADER_SOURCES
         src/api/api_item.cpp
         src/api/api_recipe.cpp
         src/api/api_projectile.cpp
+        src/api/api_npc.cpp
         src/api/api_buff.cpp
         src/api/api_register.cpp
         src/core/mod_api.cpp
