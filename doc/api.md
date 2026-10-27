@@ -418,18 +418,27 @@ mod.npc.register{
         aiStyle = 0,
         noTileCollide = true,
         knockBackResist = 0.5,
+        boss = false,                -- true：Boss 血条 + 小地图图标
     },
     vanilla_ai = false,              -- true：原版 AI 先跑，再调 ai
     ai = function(npc) end,          -- 定义后跳过原版 NPC.AI()，位移/重力自己做
+    loot = {                         -- 死亡时自动掉落（物品 id / 数量）
+        { id = 23, count = 3 },
+    },
+    on_death = function(npc) end,    -- 死亡回调（别名 on_kill），先于 loot 执行
 }
 
 -- 生成（世界坐标），返回 Main.npc 下标
 local index = mod.npc.spawn("lua_slime", x, y)
+
+-- 手动掉落（世界坐标），返回 Main.item 下标；失败返回 nil
+local drop = mod.npc.drop_item(23, x, y, 3)
 ```
 
 - 自定义 ID 从 `NPCID.Count`（697）之后分配，不占用原版 ID；
 - 内核会扩容 `TextureAssets.Npc`、`Main.npcFrameCount`、`NPCID.Sets.*`、`Player.npcTypeNoAggro`、`Lang._npcNameCache` 等按 type 索引的表；
-- 名称/图鉴/掉落/Boss 条等还没做，当前是「能生成、能走 AI、能被打」的最小版本。
+- `loot` 在 NPC 死亡时按尸体中心掉落；`on_death`（`on_kill`）先执行，可以在里面再调 `drop_item` 做条件掉落；
+- `defaults.boss = true` 时内核会自动补 `NPCID.Sets.BossHeadTextures`，Boss 血条与小地图图标随即可用。
 
 ## `mod.buff`：自定义 Buff
 

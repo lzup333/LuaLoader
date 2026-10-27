@@ -525,7 +525,8 @@ namespace lualoader::lua_api {
         g_lua_items.push_back(e);
         ensure_item_hooks();
         rebuild_language_cache();
-        LOG_INFO("[mod.item] 已注册 {} (runtime_id={})", item_name, e->runtime_id);
+        LOG_INFO("[mod.item] 已注册 {} (runtime_id={}, use={}, can_use={})", item_name, e->runtime_id,
+                 e->use_ref != LUA_NOREF, e->can_use_ref != LUA_NOREF);
         lua_pushinteger(L, e->runtime_id);
         return 1;
     }

@@ -49,6 +49,12 @@ typedef struct terraria_npc_ops_t {
      * @brief 获取纹理实例（Asset<Texture2D>），为 NULL 时用占位图
      */
     patch_handle_t (*get_texture)(terraria_npc_handle_t *current);
+
+    /**
+     * @brief NPC 死亡掉落时回调（NPC.NPCLoot 后置）
+     * @warning instance 由 hook 管理器释放，不要持有
+     */
+    void (*on_death)(terraria_npc_handle_t *current, patch_handle_t instance);
 } terraria_npc_ops_t;
 
 typedef struct terraria_npc_handle_t {
@@ -85,6 +91,10 @@ DEFINE_FUNCTION(int, terraria_npc_id_get_count)
  * @return 成功返回 Main.npc 下标，失败返回 -1
  */
 DEFINE_FUNCTION(int, terraria_npc_manager_spawn, int runtime_id, float x, float y)
+
+/** 在指定位置掉落一个物品（内核内部走 Item.NewItem） */
+DEFINE_FUNCTION(int, terraria_npc_manager_drop_item, int item_id, float x, float y,
+                int count)
 
 #ifdef __cplusplus
 }

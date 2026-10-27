@@ -16,6 +16,11 @@ namespace lualoader::lua_api {
     //   mod.npc.spawn("my_slime", x, y)
     // ========================================================================
 
+    struct LuaNpcLoot {
+        int item_id = 0;
+        int count = 1;
+    };
+
     struct LuaNpcEntry {
         terraria_npc_handle_t npc; // 必须是首成员
         lua_mod_handle_t *owner;
@@ -24,6 +29,11 @@ namespace lualoader::lua_api {
         std::vector<LuaItemFieldValue> defaults;
         int defaults_ref;
         int ai_ref;
+        int on_death_ref;
+        std::vector<LuaNpcLoot> loot;
+        patch_handle_t f_pos;
+        patch_handle_t f_width;
+        patch_handle_t f_height;
         std::string texture_path;
         std::vector<unsigned char> tex_pixels;
         int tex_w, tex_h;
@@ -58,6 +68,31 @@ namespace lualoader::lua_api {
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->ai_ref);
         push_handle(L, inst);
         pcall_log(L, 1, 0, "mod.npc.ai");
+    }
+
+    static void lua_npc_on_death(terraria_npc_handle_t *current, patch_handle_t inst) {
+        LuaNpcEntry *e = npc_from_handle(current);
+        if (!e || !inst) return;
+
+        if (e->on_death_ref != LUA_NOREF && e->L) {
+            lua_State *L = e->L;
+            lua_rawgeti(L, LUA_REGISTRYINDEX, e->on_death_ref);
+            push_handle(L, inst);
+            pcall_log(L, 1, 0, "mod.npc.on_death");
+        }
+
+        if (e->loot.empty()) return;
+        float pos[2] = {0.0f, 0.0f};
+        int w = 0, h = 0;
+        patchlib_field_get_value(e->f_pos, inst, pos);
+        patchlib_field_get_value(e->f_width, inst, &w);
+        patchlib_field_get_value(e->f_height, inst, &h);
+        const float cx = pos[0] + (float) w / 2.0f;
+        const float cy = pos[1] + (float) h / 2.0f;
+        LOG_DEBUG("[mod.npc] on_death: dropping {} loot entries at ({:.0f},{:.0f})",
+                  e->loot.size(), cx, cy);
+        for (const auto &l : e->loot)
+            terraria_npc_manager_drop_item(l.item_id, cx, cy, l.count);
     }
 
     static patch_handle_t lua_npc_get_texture(terraria_npc_handle_t *current) {
@@ -115,6 +150,10 @@ namespace lualoader::lua_api {
         e->name = npc_name;
         e->defaults_ref = LUA_NOREF;
         e->ai_ref = LUA_NOREF;
+        e->on_death_ref = LUA_NOREF;
+        e->f_pos = PATCH_NULL;
+        e->f_width = PATCH_NULL;
+        e->f_height = PATCH_NULL;
         e->tex_w = e->tex_h = 0;
         e->tex_tried = false;
         e->registered = false;
@@ -170,6 +209,32 @@ namespace lualoader::lua_api {
         else
             lua_pop(L, 1);
 
+        lua_getfield(L, 1, "on_death");
+        if (!lua_isfunction(L, -1)) { lua_pop(L, 1); lua_getfield(L, 1, "on_kill"); }
+        if (lua_isfunction(L, -1)) e->on_death_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        else lua_pop(L, 1);
+
+        lua_getfield(L, 1, "loot");
+        if (lua_istable(L, -1)) {
+            const int n = (int) lua_rawlen(L, -1);
+            for (int i = 1; i <= n; ++i) {
+                lua_rawgeti(L, -1, i);
+                if (lua_istable(L, -1)) {
+                    LuaNpcLoot l;
+                    lua_getfield(L, -1, "id");
+                    l.item_id = (int) luaL_optinteger(L, -1, 0);
+                    lua_pop(L, 1);
+                    lua_getfield(L, -1, "count");
+                    l.count = (int) luaL_optinteger(L, -1, 1);
+                    lua_pop(L, 1);
+                    if (l.item_id > 0) e->loot.push_back(l);
+                    else LOG_WARN("[mod.npc] {}: loot 需要数字 id", npc_name);
+                }
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+
         lua_getfield(L, 1, "texture");
         if (lua_type(L, -1) == LUA_TSTRING) {
             const char *rel = lua_tostring(L, -1);
@@ -189,11 +254,22 @@ namespace lualoader::lua_api {
         e->npc.npc_ops.set_defaults = lua_npc_set_defaults;
         e->npc.npc_ops.ai = (e->ai_ref != LUA_NOREF) ? lua_npc_ai : nullptr;
         e->npc.npc_ops.get_texture = lua_npc_get_texture;
+        e->npc.npc_ops.on_death = (e->on_death_ref != LUA_NOREF)
+                ? lua_npc_on_death : nullptr;
+        if (!e->loot.empty())
+            e->npc.npc_ops.on_death = lua_npc_on_death;
+
+        patch_handle_t npc_cls = patchlib_type_get_type("Terraria", "NPC");
+        e->f_pos = patchlib_type_get_field(npc_cls, "position");
+        e->f_width = patchlib_type_get_field(npc_cls, "width");
+        e->f_height = patchlib_type_get_field(npc_cls, "height");
+        patchlib_free(npc_cls);
 
         if (!terraria_npc_manager_register_npc(&e->npc)) {
             LOG_ERROR("[mod.npc] {}: 注册失败", npc_name);
             if (e->defaults_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->defaults_ref);
             if (e->ai_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->ai_ref);
+            if (e->on_death_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->on_death_ref);
             delete e;
             lua_pushnil(L);
             return 1;
@@ -239,10 +315,22 @@ namespace lualoader::lua_api {
         return 1;
     }
 
+    static int l_npc_drop_item(lua_State *L) {
+        const int id = (int) luaL_checkinteger(L, 1);
+        const float x = (float) luaL_checknumber(L, 2);
+        const float y = (float) luaL_checknumber(L, 3);
+        const int count = (int) luaL_optinteger(L, 4, 1);
+        const int index = terraria_npc_manager_drop_item(id, x, y, count);
+        if (index >= 0) lua_pushinteger(L, index);
+        else lua_pushnil(L);
+        return 1;
+    }
+
     static const luaL_Reg mod_npc_functions[] = {
             {"register", l_npc_register},
             {"runtime_id", l_npc_runtime_id},
             {"spawn", l_npc_spawn},
+            {"drop_item", l_npc_drop_item},
             {nullptr, nullptr},
     };
 
@@ -258,6 +346,8 @@ namespace lualoader::lua_api {
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->defaults_ref);
                 if (e->ai_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->ai_ref);
+                if (e->on_death_ref != LUA_NOREF)
+                    luaL_unref(handle->L, LUA_REGISTRYINDEX, e->on_death_ref);
             }
             delete e;
             g_lua_npcs.erase(g_lua_npcs.begin() + static_cast<long>(i));
