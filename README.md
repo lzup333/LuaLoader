@@ -9,6 +9,11 @@ patchlib 能力封装成一张 `mod` 表交给脚本。
 - 🎨 图形界面：[`doc/gui.md`](doc/gui.md)
 - 🧩 原生扩展：[`doc/native.md`](doc/native.md)
 
+> 💡 **写内容型 Mod 推荐配合 [LuaModQuickAPI](https://github.com/lzup333/LuaModQuickAPI) 使用。**
+> 它在 LuaLoader 的 `mod.patch` / `mod.item` / `mod.projectile` / `mod.buff` / `mod.npc` 之上，
+> 提供字段代理、注册简写、AI/位移辅助和五章内容开发指南（合成 / 物品 / 弹幕 / Buff / NPC），
+> 能省掉大量 `get_type → get_field → 判空` 样板。纯 Lua，不用重新编译 LuaLoader。
+
 ## 快速开始
 
 一个 Mod 就是一个目录：

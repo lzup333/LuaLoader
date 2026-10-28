@@ -2,6 +2,11 @@
 
 用 Lua 写 Mod；每个 Mod 跑在独立的 Lua 状态机里，通过全局表 `mod` 访问一切能力。
 
+> 💡 **内容型 Mod 推荐用 [LuaModQuickAPI](https://github.com/lzup333/LuaModQuickAPI) 编写。**
+> 它在本文档的底层 API 之上提供字段代理、注册简写和 AI 辅助，并附带
+> **合成 / 物品 / 弹幕 / Buff / NPC** 五章开发指南（说明 + 示例 + 注意事项）。
+> 本文档仍然适合查底层 API 的精确签名；日常写内容 Mod 可以先看 QuickAPI 的章节。
+
 ## 最小 Mod
 
 ```
