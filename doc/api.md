@@ -459,7 +459,8 @@ mod.buff.register{
 ```
 
 - **效果要自己在 `update` 里做**：原版 Buff 的效果写死在 `Player.UpdateBuffs` 里，自定义 Buff 原版不知道；
-  `update` 每帧回调一次，`buff_index` 是该 Buff 在 `buffType[]` 中的槽位（一般用不到）。
+  `update` 每帧回调一次，`buff_index` 是内核激活列表里的下标，**不是** `buffType[]` 槽位；
+  一般用不到，也不要拿它或 runtime_id 去索引原版按 buff 定长的数组。
 - `apply` 在 AddBuff **成功**后调用（目标免疫 / PvP 转发 / 时长为 0 都不会触发）；
   同一 Buff 重复挂会刷新时长并再次调用。
 - 名称与说明走 `language`；缺省时显示本地化键名。语言切换后内核会自动刷新已注册的文本。

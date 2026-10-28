@@ -7,14 +7,15 @@
  * 设计要点：
  *   · ID：base = BuffID.Count（原版数量），runtime_id = base + 注册表下标；
  *     注册表按 (loader, mod, name) 排序后分配，保证客户端/服务端一致。
- *   · 扩容：TextureAssets.Buff[]、Main 上按 buff type 索引的静态表、
- *     BuffID.Sets.*、Lang._buffNameCache/_buffDescriptionCache 必须一起扩容，
- *     否则 GetBuffName / UpdateBuffs / DrawBuffIcon 都会越界。
- *   · buffImmune 是 Player/NPC 的实例字段，按 type 索引；实例会在进世界时重建，
- *     所以在 AddBuff / FindBuffIndex 入口按需补齐。
- *   · 回调：AddBuff 之后 on_apply；UpdateBuffs 之后 on_update（每帧，仅激活时）。
- *   · 存档：原版存档不存自定义 Buff（Main.buffNoSave = true），改由内核的
- *     plr.tef 伴生存档按 (loader/mod/name) 存读，卸载 Mod 也不会残留无效 ID。
+ *   · 自管理：自定义 Buff 不写入 Player.buffType，也不经过原版 AddBuff/UpdateBuffs。
+ *     原版按 buff id 定长的表（TextureAssets.Buff、Main.*、BuffID.Sets.*、Lang 缓存、
+ *     Player/NPC.buffImmune、Main.buffNoSave 等）只会收到原版 0..Count-1，
+ *     不需要为自定义 ID 扩容，内核也不会把 runtime_id 写进这些表。
+ *   · 显示：内核维护激活列表，接管原生 Buff 栏的绘制（桌面/手机）。
+ *   · 回调：apply 在挂上时调用；update 每帧调用，第三个参数是内核 g_active[]
+ *     的下标，不是 player.buffType[] 槽位。禁止拿它或 runtime_id 去索引原版定长表。
+ *   · 存档：自定义 Buff 不进原版存档，由内核的 plr.tef 伴生存档按
+ *     (loader/mod/name) 存读，卸载 Mod 也不会残留无效 ID。
  *******************************************************************************/
 #ifndef TEFFKERNEL_TERRARIA_BUFF_MANAGER_H
 #define TEFFKERNEL_TERRARIA_BUFF_MANAGER_H
@@ -55,7 +56,7 @@ typedef struct terraria_buff_ops_t {
      * 实际效果（加属性、扣血、召唤弹幕等）必须在这里实现。
      *
      * @param player      玩家实例
-     * @param buff_index  该 Buff 在玩家 buffType[] 里的槽位
+     * @param buff_index  内核激活列表 g_active[] 的下标（不是 player.buffType[] 槽位）
      * @warning instance 由 hook 管理器释放，不要持有
      */
     void (*update)(terraria_buff_handle_t *current, patch_handle_t player, int buff_index);

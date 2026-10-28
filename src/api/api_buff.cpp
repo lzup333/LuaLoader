@@ -14,12 +14,12 @@ namespace lualoader::lua_api {
     //     light_pet   = false,            -- 光源宠物（同类互斥）
     //     vanity_pet  = false,            -- 观赏宠物（同类互斥）
     //     apply       = function(player, time) end,      -- 挂上时
-    //     update      = function(player, buff_index) end,-- 每帧（激活时）
+    //     update      = function(player, buff_index) end,-- 每帧（激活时；buff_index 为内核激活列表下标）
     //     language    = { en = {name=, description=}, zh = {...} },
     //   } -> runtime_id | nil
     //
-    // 说明：自定义 Buff 不写进原版存档（避免卸载 Mod 后残留 401+ ID 越界），
-    //       由内核的 plr.tef 伴生存档按稳定键存读。
+    // 说明：自定义 Buff 不写入 Player.buffType，原版按 buff id 定长的表不需要扩容；
+    //       存档由内核的 plr.tef 伴生文件按稳定键存读。
     // ========================================================================
 
     /// 内核以 terraria_buff_handle_t* 回调，故 buff 必须是首成员。
