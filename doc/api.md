@@ -351,6 +351,7 @@ mod.item.register{
     defaults = { damage = 25, useTime = 20, useStyle = 1, autoReuse = true,
                  width = 40, height = 40, melee = true, rare = 2, maxStack = 1 },
     can_use = function(player, item, ignore_cursed) return true end,
+    use_sound = "Item1",           -- Item.UseSound = SoundID.Item1；写 SoundID 字段名
     language = { en = { name = "Test Sword", tooltip = "..." },
                  zh = { name = "测试之剑", tooltip = "..." } },
     recipe  = { result = 1, materials = { { id = 9, count = 10 } }, station = 18 },
@@ -359,6 +360,7 @@ mod.item.register{
 ```
 
 - `defaults` 字段名与 `Terraria.Item` 一致；值类型不符会打日志忽略。函数形式 `function(item) end`（非托管句柄）。
+- `use_sound`：写 `Terraria.ID.SoundID` 的字段名（如 `"Item1"` / `"Item2"`），内核会写入 `Item.UseSound`；不写则沿用原版默认。
 - 语言键：`en/de/it/fr/es/ru/zh/pt/pl/ja/ko/zh-tw`。
 - PNG 放 `Resources/Image/` 或 `Resources/lib/Image/`；解码为 RGBA32（Android 自动 Y 翻转,因为不翻转贴图就是反的！翻转是修正处理）。
 - `mod.item.runtime_id(name)` 取内核分配的 ID（注册阶段通常为 -1）。

@@ -39,6 +39,7 @@ namespace lualoader::lua_api {
         std::vector<std::pair<int, int> > recipe_materials;
         int recipe_station;
         std::map<int, std::pair<std::string, std::string> > lang;
+        patch_handle_t use_sound;   // SoundID.ItemN 的 LegacySoundStyle 对象
         bool registered;
         int runtime_id;
     };
@@ -72,6 +73,21 @@ namespace lualoader::lua_api {
             lua_rawgeti(L, LUA_REGISTRYINDEX, e->defaults_ref);
             push_handle(L, inst);
             pcall_log(L, 1, 0, "mod.item.defaults"); // pcall_log already consumes errors
+        }
+
+        /* use_sound：每次 SetDefaults 都重新写，避免原版/其它 Mod 把它覆盖掉。
+         * UseSound 是 LegacySoundStyle 引用字段，直接放 SoundID.ItemN 的对象。 */
+        if (patchlib_is_valid(e->use_sound)) {
+            static patch_handle_t f_use_sound = PATCH_NULL;
+            if (!patchlib_is_valid(f_use_sound)) {
+                patch_handle_t item_cls = patchlib_type_get_type("Terraria", "Item");
+                if (patchlib_is_valid(item_cls)) {
+                    f_use_sound = patchlib_type_get_field(item_cls, "UseSound");
+                    patchlib_free(item_cls);
+                }
+            }
+            if (patchlib_is_valid(f_use_sound))
+                patchlib_field_set_value(f_use_sound, inst, &e->use_sound);
         }
     }
 
@@ -328,6 +344,7 @@ namespace lualoader::lua_api {
         e->defaults_ref = LUA_NOREF;
         e->can_use_ref = LUA_NOREF;
         e->use_ref = LUA_NOREF;
+        e->use_sound = PATCH_NULL;
         e->tex_w = e->tex_h = 0;
         e->tex_tried = false;
         e->has_recipe = false;
@@ -353,6 +370,27 @@ namespace lualoader::lua_api {
             e->item.anim_frames = static_cast<int>(luaL_optinteger(L, -1, 0));
             lua_pop(L, 1);
             if (e->item.anim_frames < 0) e->item.anim_frames = 0;
+        }
+        lua_pop(L, 1);
+
+        // use_sound：SoundID 里的字段名，例如 "Item1" / "Item2" / "Item14"
+        lua_getfield(L, 1, "use_sound");
+        if (lua_type(L, -1) == LUA_TSTRING) {
+            const char *sname = lua_tostring(L, -1);
+            patch_handle_t sound_cls = patchlib_type_get_type("Terraria.ID", "SoundID");
+            if (patchlib_is_valid(sound_cls)) {
+                patch_handle_t sfield = patchlib_type_get_field(sound_cls, sname);
+                if (patchlib_is_valid(sfield)) {
+                    patch_handle_t snd = PATCH_NULL;
+                    patchlib_field_get_value(sfield, PATCH_NULL, &snd);
+                    if (patchlib_is_valid(snd)) e->use_sound = snd;
+                    else LOG_WARN("[mod.item] {}: SoundID.{} 是 null", item_name, sname);
+                    patchlib_free(sfield);
+                } else {
+                    LOG_WARN("[mod.item] {}: 找不到 SoundID.{}", item_name, sname);
+                }
+                patchlib_free(sound_cls);
+            }
         }
         lua_pop(L, 1);
 
@@ -511,6 +549,7 @@ namespace lualoader::lua_api {
             LOG_ERROR("[mod.item] {}: 注册失败", item_name);
             if (e->defaults_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->defaults_ref);
             if (e->can_use_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->can_use_ref);
+            if (patchlib_is_valid(e->use_sound)) patchlib_free(e->use_sound);
             delete e;
             lua_pushnil(L);
             return 1;
@@ -564,6 +603,7 @@ namespace lualoader::lua_api {
                 if (e->can_use_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->can_use_ref);
             }
+            if (patchlib_is_valid(e->use_sound)) patchlib_free(e->use_sound);
             delete e;
             g_lua_items.erase(g_lua_items.begin() + static_cast<long>(i));
         }
