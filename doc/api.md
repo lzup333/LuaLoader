@@ -525,10 +525,10 @@ end
 
 ```lua
 mod.recipe.add{
-    result    = 9,                              -- 产物 id，或 { id = 9, count = 10 }
-    materials = { { id = 20, count = 5 },       -- 材料：{ id, count }
-                  { id = 22, count = 2 } },
-    station   = 18,                             -- 合成站方块 id；-1 = 无
+    result    = 8,                              -- 产物 id，或 { id = 8, count = 3 }
+    materials = { { id = 9, count = 1 },        -- 材料：{ id, count }；9 = 木材
+                  { id = 23, count = 1 } },     -- 23 = 凝胶
+    station   = -1,                             -- 合成站方块 id；-1 = 无
 }
 
 ```
