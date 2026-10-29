@@ -85,6 +85,9 @@ DEFINE_FUNCTION(bool, patchlib_array_empty, patch_handle_t array);
  */
 DEFINE_FUNCTION(size_t, patchlib_array_length, patch_handle_t array)
 
+/**
+ * @brief 取数组元素大小（字节）；空数组或失败返回 0
+ */
 DEFINE_FUNCTION(size_t, patchlib_array_element_size, patch_handle_t array);
 
 /**

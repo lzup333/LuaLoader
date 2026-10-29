@@ -89,6 +89,20 @@ DEFINE_FUNCTION(patch_handle_t, patchlib_method_make_generic_instance, patch_han
  * @return 成功返回函数指针，否则返回NULL
  */
 DEFINE_FUNCTION(void *, patchlib_method_get_pointer, patch_handle_t method)
+
+/**
+ * @brief 安装「强类型」hook（仅 Android）
+ *
+ * 与 patchlib_install_prepost_hook 的区别：detour 是普通 C 函数，直接调用
+ * original 指针，不经过 libffi closure。托管异常需要穿过 hook 帧时，
+ * 这样才有合法的 unwind 信息（libffi 帧没有 CFI，会导致 terminate/闪退）。
+ *
+ * @param method   方法句柄
+ * @param detour   C 函数指针（签名必须与方法一致）
+ * @param original[out] 原始函数指针（Dobby trampoline），由 detour 调用
+ * @return 成功返回 true
+ */
+DEFINE_FUNCTION(bool, patchlib_install_typed_hook, patch_handle_t method, void *detour, void **original)
 #endif
 
 /**

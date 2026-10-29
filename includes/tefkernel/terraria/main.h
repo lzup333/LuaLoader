@@ -42,6 +42,7 @@ extern "C" {
  * @brief 获取游戏版本号
  * @return 当前版本号
  */
+/** @brief 当前进程是否为服务端（TerrariaServer / -server） */
 DEFINE_FUNCTION(bool, terraria_main_is_server)
 
 DEFINE_FUNCTION(int, terraria_main_get_cur_release)

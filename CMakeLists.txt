@@ -56,6 +56,7 @@ add_library(LuaLoader SHARED ${LUALOADER_SOURCES})
 target_include_directories(LuaLoader
         PUBLIC
         includes
+        includes/tefkernel
 )
 
 target_link_libraries(LuaLoader

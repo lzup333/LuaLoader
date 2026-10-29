@@ -20,8 +20,6 @@
 #ifndef TEFFKERNEL_TERRARIA_BUFF_MANAGER_H
 #define TEFFKERNEL_TERRARIA_BUFF_MANAGER_H
 
-#include <stdbool.h>
-
 #include "../tef_api.h"
 #include "../patchlib/type.h"
 #include "../tefstd/vector.h"
@@ -55,6 +53,7 @@ typedef struct terraria_buff_ops_t {
      * 原版 Buff 的效果是写死在 Player.UpdateBuffs 里的，自定义 Buff 想要
      * 实际效果（加属性、扣血、召唤弹幕等）必须在这里实现。
      *
+     * @param current     当前buff句柄
      * @param player      玩家实例
      * @param buff_index  内核激活列表 g_active[] 的下标（不是 player.buffType[] 槽位）
      * @warning instance 由 hook 管理器释放，不要持有
@@ -67,12 +66,12 @@ typedef struct terraria_buff_ops_t {
     patch_handle_t (*get_texture)(terraria_buff_handle_t *current);
 
     /**
-     * @brief 当前语言的显示名称（UTF-8，注册时内核会复制一份）
+     * @brief 当前语言的显示名称（UTF-8，生命周期由 loader 保证）
      */
     const char *(*get_display_name)(terraria_buff_handle_t *current);
 
     /**
-     * @brief 当前语言的显示说明（UTF-8，注册时内核会复制一份）
+     * @brief 当前语言的显示说明（UTF-8）
      */
     const char *(*get_display_description)(terraria_buff_handle_t *current);
 } terraria_buff_ops_t;
@@ -95,7 +94,8 @@ typedef struct terraria_buff_handle_t {
 
     terraria_buff_ops_t buff_ops;
 
-    /* 展示文本：注册时由内核复制成自有内存 */
+    /* 展示文本：注册时从 get_display_* 回调**复制**成内核自有内存，
+     * 悬停时不再跨库取指针（Lua 侧重建/卸载后指针会悬空）。 */
     char *display_name;
     char *display_description;
 } terraria_buff_handle_t;
@@ -138,6 +138,23 @@ DEFINE_FUNCTION(terraria_buff_handle_t*, terraria_buff_manager_find_buff,
  * @brief 原版 BuffID.Count（仅用于 runtime_id 起始值，不写进游戏 buffType）
  */
 DEFINE_FUNCTION(int, terraria_buff_id_get_count)
+
+/**
+ * @brief 清除某玩家身上的全部自定义减益（护士治疗等场景）
+ */
+DEFINE_FUNCTION(void, terraria_buff_manager_clear_debuffs, patch_handle_t player)
+
+
+typedef void (*terraria_buff_active_visitor_t)(void *user, terraria_buff_handle_t *buff,
+                                               int time);
+
+/**
+ * @brief 遍历某玩家身上激活的自定义 Buff（用于伴生存档）
+ * @param player  玩家实例
+ * @param visitor 回调：user / buff 句柄 / 剩余帧数
+ */
+DEFINE_FUNCTION(void, terraria_buff_manager_visit_active, patch_handle_t player,
+                terraria_buff_active_visitor_t visitor, void *user)
 
 /**
  * @brief 给玩家挂上自定义 Buff（内核自己计时，不写 buffType）
