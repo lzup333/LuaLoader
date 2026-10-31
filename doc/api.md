@@ -68,6 +68,7 @@ todo_list = { "setup" }   -- 启动时按顺序执行清单里的函数
 | `support` | 声明支持的平台/架构，不支持的平台不会安装 |
 | `dependence` / `conflicts` | 依赖 / 冲突的 Mod id 数组，没有就留空 |
 | `sizeCategory` | `TINY` / `SMALL` / `MEDIUM` / `LARGE`（展示用） |
+|`features`|见TEFManager项目文档|
 
 ### luamod.json（LuaLoader 入口）
 
