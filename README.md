@@ -20,9 +20,9 @@ patchlib 能力封装成一张 `mod` 表交给脚本。
 
 ```
 my_mod/
-├── Info.json            # Mod 元信息
-├── Manifest.json        # parentLoader 写 "lzup333.lualoader"
-├── luamod.json          # { "main": "main.lua" }
+├── Info.json
+├── Manifest.json
+├── luamod.json
 └── Resources/
     └── lib/
         └── main.lua
