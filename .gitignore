@@ -27,3 +27,5 @@ libtefkernel.*.so
 
 # 原生模块 SDK（导入库），由 build.sh --implib 生成，随 Release asset 分发
 /sdk/
+
+*__pycache__*
