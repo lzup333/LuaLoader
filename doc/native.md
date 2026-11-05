@@ -49,7 +49,7 @@ int luaopen_hello(lua_State *L) {
 ```
 
 - 只能用 Lua C API 做计算/数据处理；加载器不再向模块暴露 TEFKernel / patchlib API。
-- 必须使用**与 LuaLoader 相同的 Lua 版本（当前 5.5.1）**的头文件编译；Lua 不同版本之间没有 ABI 兼容。
+- 必须使用 **与 LuaLoader 相同的 Lua 版本（当前 5.5.1)** 的头文件编译；Lua 不同版本之间没有 ABI 兼容。
 
 ## 编译
 
