@@ -105,7 +105,7 @@ export TEFKERNEL_LIB=./libtefkernel.linux.x86_64.so
 ## 原生扩展
 
 性能敏感或 Lua 不好实现的部分，可以自带 C/C++ 原生模块（`Resources/native/<平台>_<架构>/*.so`），
-`require` 即用。详见 [`doc/native.md`](doc/native.md)。
+`require` 即用。原生模块是标准 Lua C 模块，无需专用头文件或 API 表，详见 [`doc/native.md`](doc/native.md)。
 
 ## 安全提示
 

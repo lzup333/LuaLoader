@@ -22,8 +22,6 @@
 
 #include "lua_engine.hpp"
 #include "lua_api.hpp"
-#include "mod_api.hpp"
-#include "lualoader_mod.h"
 
 #include <atomic>
 #include <cctype>
@@ -257,56 +255,9 @@ namespace lualoader::lua_engine {
         return dirs;
     }
 
-    /// 预加载原生库并注入 LualoaderMod API 表。
-    /// Android 上模块无法通过 ELF 作用域解析 lua_*/patchlib_*，统一走 ll_set_api 注入；
-    /// 桌面端同时保留 RTLD_GLOBAL，兼容直接 extern 的写法。
-    static void preload_native_libs(const std::vector<std::string> &search_dirs,
-                                    const std::string &mod_id,
-                                    std::vector<void *> &loaded) {
-        namespace fs = std::filesystem;
-        std::error_code ec;
-        for (const auto &dir: search_dirs) {
-            if (!fs::is_directory(dir, ec)) continue;
-            for (const auto &entry: fs::directory_iterator(dir, ec)) {
-                if (!entry.is_regular_file()) continue;
-                const std::string ext = entry.path().extension().string();
-#ifdef _WIN32
-                if (ext != ".dll") continue;
-                HMODULE h = LoadLibraryA(entry.path().string().c_str());
-                if (!h) {
-                    LOG_WARN("[mod {}] LoadLibrary failed: {}", mod_id, entry.path().string());
-                    continue;
-                }
-                auto set_api = reinterpret_cast<void (*)(const ll_api_t *)>(
-                        reinterpret_cast<void *>(GetProcAddress(h, "ll_set_api")));
-                if (set_api) {
-                    set_api(lualoader::mod_api::get_api());
-                    LOG_INFO("[mod {}] injected ll_api ({} symbols)", mod_id,
-                             lualoader::mod_api::symbol_count());
-                }
-                loaded.push_back(reinterpret_cast<void *>(h));
-                LOG_INFO("[mod {}] preloaded native module: {}", mod_id, entry.path().filename().string());
-#else
-                if (ext != ".so") continue;
-                void *h = dlopen(entry.path().c_str(), RTLD_NOW | RTLD_GLOBAL);
-                if (!h) {
-                    const char *e = dlerror();
-                    LOG_WARN("[mod {}] dlopen failed: {} ({})", mod_id, entry.path().string(), e ? e : "?");
-                    continue;
-                }
-                auto set_api = reinterpret_cast<void (*)(const ll_api_t *)>(
-                        dlsym(h, "ll_set_api"));
-                if (set_api) {
-                    set_api(lualoader::mod_api::get_api());
-                    LOG_INFO("[mod {}] injected ll_api ({} symbols)", mod_id,
-                             lualoader::mod_api::symbol_count());
-                }
-                loaded.push_back(h);
-                LOG_INFO("[mod {}] preloaded native module: {}", mod_id, entry.path().filename().string());
-#endif
-            }
-        }
-    }
+    /// 原生模块统一按标准 Lua C 模块加载（由 `require` 经 package.cpath 触发），
+    /// 不再由 loader 预加载或注入 API 表。`lua_*` 符号由 loader 自身导出、
+    /// Lua 的 loadlib 在 dlopen/LoadLibrary 时解析；句柄也由 Lua 在状态机关闭时释放。
 
     static bool run_file(lua_State *L, const std::string &path, std::string &err) {
         if (luaL_loadfile(L, path.c_str()) != LUA_OK) {
@@ -506,7 +457,6 @@ namespace lualoader::lua_engine {
         const std::vector<std::string> native_search = prepare_native_libs(
                 handle->mod_dir, private_dir, handle->platform, handle->arch, handle->mod_id);
         configure_package(L, handle->mod_dir, native_search);
-        preload_native_libs(native_search, handle->mod_id, handle->native_libs);
         lua_api::register_api(L, handle);
 
         LOG_INFO("Running Lua entry: {}", entry_path);
@@ -553,20 +503,6 @@ namespace lualoader::lua_engine {
         lua_api::uninstall_all_hooks(handle);
     }
 
-    /// 关闭该 Mod 预加载的所有原生库（逆序）。Lua 状态机关闭之后再调用，
-    /// 避免库代码在 finalizer / hook 卸载过程中被回收。
-    static void unload_native_libs(std::vector<void *> &libs) {
-        for (auto it = libs.rbegin(); it != libs.rend(); ++it) {
-            if (!*it) continue;
-#ifdef _WIN32
-            FreeLibrary(reinterpret_cast<HMODULE>(*it));
-#else
-            dlclose(*it);
-#endif
-        }
-        libs.clear();
-    }
-
     void close(lua_mod_handle_t *handle) {
         if (!handle) return;
         lua_api::uninstall_all_hooks(handle);
@@ -582,7 +518,6 @@ namespace lualoader::lua_engine {
             lua_close(handle->L);
             handle->L = nullptr;
         }
-        unload_native_libs(handle->native_libs);
         handle->init_ref = LUA_NOREF;
         handle->cleanup_ref = LUA_NOREF;
         handle->gui_ref = LUA_NOREF;

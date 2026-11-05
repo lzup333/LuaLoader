@@ -19,7 +19,7 @@ endif ()
 
 # Vendored dependencies
 add_subdirectory(lib/spdlog-1.17.0)
-add_subdirectory(lib/lua-5.4.8)
+add_subdirectory(lib/lua-5.5.1)
 
 # 原生 GUI：直接使用游戏自带的 XNA/Unity SpriteBatch 绘制，不再依赖 Dear ImGui。
 set(LUALOADER_SOURCES
@@ -41,7 +41,6 @@ set(LUALOADER_SOURCES
         src/api/api_npc.cpp
         src/api/api_buff.cpp
         src/api/api_register.cpp
-        src/core/mod_api.cpp
         src/gui.cpp
         src/gui/gui_images.cpp
         src/gui/gui_ime.cpp

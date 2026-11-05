@@ -55,7 +55,6 @@ namespace lualoader {
         int gui_ref{LUA_NOREF};     ///< mod.on_gui 的注册表引用（原生即时模式 GUI）
         std::unordered_map<std::string, int> net_recv_refs; ///< mod.net.on 按频道注册的服务端收包回调
         std::vector<int> hook_slots; ///< 该 Mod 申请的钩子槽位（用于卸载时清理）
-        std::vector<void *> native_libs; ///< 预加载的原生库句柄（卸载时关闭，避免残留累积）
     };
 
     namespace lua_engine {
