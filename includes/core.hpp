@@ -28,25 +28,23 @@
 #include "tefkernel/modloader/modloader_core.h"
 
 namespace lualoader::core {
-    inline std::unordered_map<std::string, lua_mod_handle_t *> lua_mod_handles{};
-    inline std::unordered_map<std::string, multiplayer_mod_info_t *> lua_mod_multiplayer_infos{};
+inline std::unordered_map<std::string, lua_mod_handle_t *> lua_mod_handles{};
+inline std::unordered_map<std::string, multiplayer_mod_info_t *> lua_mod_multiplayer_infos{};
 
-    ml_result_t load_mod(mod_manifest_t *mod_manifest);
+ml_result_t load_mod(mod_manifest_t *mod_manifest);
 
-    ml_result_t unload_mod(mod_manifest_t *mod_manifest);
+ml_result_t unload_mod(mod_manifest_t *mod_manifest);
 
+ml_result_t init_mod(mod_manifest_t *mod_manifest);
 
-    ml_result_t init_mod(mod_manifest_t *mod_manifest);
+const multiplayer_mod_info_t *get_multiplayer_info(mod_manifest_t *mod_manifest);
 
-    const multiplayer_mod_info_t *get_multiplayer_info(mod_manifest_t *mod_manifest);
+ml_result_t init_ml(ml_entry_t *ml_entry);
 
-    ml_result_t init_ml(ml_entry_t *ml_entry);
+ml_result_t cleanup_ml(ml_entry_t *ml_entry);
 
-    ml_result_t cleanup_ml(ml_entry_t *ml_entry);
+const ml_info_t *get_info();
 
-    const ml_info_t *get_info();
-
-
-    /// 依次调用所有 Mod 的 mod.on_gui（每帧渲染）
-    void call_all_on_gui();
+/// 依次调用所有 Mod 的 mod.on_gui（每帧渲染）
+void call_all_on_gui();
 } // namespace lualoader::core

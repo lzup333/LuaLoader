@@ -27,36 +27,38 @@
 
 namespace lualoader::image {
 
-    bool decode_png(const void *data, const size_t size,
-                    std::vector<unsigned char> &out, int &w, int &h) {
-        out.clear();
-        w = h = 0;
-        if (!data || size == 0) return false;
-        int channels = 0;
-        stbi_uc *px = stbi_load_from_memory(static_cast<const stbi_uc *>(data),
-                                            static_cast<int>(size), &w, &h, &channels, 4);
-        if (!px) return false;
-        out.assign(px, px + static_cast<size_t>(w) * h * 4);
-        stbi_image_free(px);
-        return true;
-    }
+bool decode_png(const void *data, const size_t size, std::vector<unsigned char> &out, int &w, int &h) {
+    out.clear();
+    w = h = 0;
+    if (!data || size == 0)
+        return false;
+    int channels = 0;
+    stbi_uc *px =
+        stbi_load_from_memory(static_cast<const stbi_uc *>(data), static_cast<int>(size), &w, &h, &channels, 4);
+    if (!px)
+        return false;
+    out.assign(px, px + static_cast<size_t>(w) * h * 4);
+    stbi_image_free(px);
+    return true;
+}
 
-    bool decode_png_file(const std::string &path,
-                         std::vector<unsigned char> &out, int &w, int &h) {
-        FILE *f = std::fopen(path.c_str(), "rb");
-        if (!f) return false;
-        std::fseek(f, 0, SEEK_END);
-        const long n = std::ftell(f);
-        std::fseek(f, 0, SEEK_SET);
-        if (n <= 0) {
-            std::fclose(f);
-            return false;
-        }
-        std::vector<unsigned char> bytes(static_cast<size_t>(n));
-        const size_t read = std::fread(bytes.data(), 1, bytes.size(), f);
+bool decode_png_file(const std::string &path, std::vector<unsigned char> &out, int &w, int &h) {
+    FILE *f = std::fopen(path.c_str(), "rb");
+    if (!f)
+        return false;
+    std::fseek(f, 0, SEEK_END);
+    const long n = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (n <= 0) {
         std::fclose(f);
-        if (read != bytes.size()) return false;
-        return decode_png(bytes.data(), bytes.size(), out, w, h);
+        return false;
     }
+    std::vector<unsigned char> bytes(static_cast<size_t>(n));
+    const size_t read = std::fread(bytes.data(), 1, bytes.size(), f);
+    std::fclose(f);
+    if (read != bytes.size())
+        return false;
+    return decode_png(bytes.data(), bytes.size(), out, w, h);
+}
 
 } // namespace lualoader::image

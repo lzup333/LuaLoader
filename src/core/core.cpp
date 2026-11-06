@@ -68,8 +68,15 @@ API_EXPORT const ml_ops_t *API_CALL ml_create() {
     return &ml_ops;
 }
 
-
-
+/// 加载一个 Lua Mod（由内核在安装/启用时调用）。
+///
+/// 流程：
+///   1. 校验 manifest/path，重复加载直接忽略
+///   2. 读取 luamod.json 里的入口、版本、联机标记
+///   3. lua_engine::load 创建独立状态机并执行入口脚本
+///   4. 成功后才放进 lua_mod_handles / 联机信息表
+///
+/// 任何一步失败都会走 lua_engine::close，确保状态机/回调/原生库不残留。
 ml_result_t lualoader::core::load_mod(mod_manifest_t *mod_manifest) {
     if (!mod_manifest || !mod_manifest->path) {
         LOG_ERROR("load_mod: null manifest or path");
@@ -84,8 +91,7 @@ ml_result_t lualoader::core::load_mod(mod_manifest_t *mod_manifest) {
     }
 
     LOG_INFO("Starting to load Lua mod: mod_id={}, path={}, private_dir={}",
-             mod_manifest->mod_id ? mod_manifest->mod_id : "(null)",
-             mod_manifest->path,
+             mod_manifest->mod_id ? mod_manifest->mod_id : "(null)", mod_manifest->path,
              mod_manifest->private_dir ? mod_manifest->private_dir : "(null)");
 
     std::filesystem::path config_path(mod_manifest->path);
@@ -112,8 +118,8 @@ ml_result_t lualoader::core::load_mod(mod_manifest_t *mod_manifest) {
         const bool multiplayer_safe = json_data.value("multiplayer_safe", true);
 
         std::string err;
-        const std::string private_dir = mod_manifest->private_dir
-                ? mod_manifest->private_dir : config_path.parent_path().string();
+        const std::string private_dir =
+            mod_manifest->private_dir ? mod_manifest->private_dir : config_path.parent_path().string();
         if (!lua_engine::load(handle, config_path.string(), private_dir, err)) {
             LOG_ERROR("Failed to load Lua mod {}: {}", handle->mod_id, err);
             // load 失败时可能已预加载原生库，必须 close 以释放（否则句柄泄漏/残留）
@@ -131,8 +137,8 @@ ml_result_t lualoader::core::load_mod(mod_manifest_t *mod_manifest) {
         lua_mod_handles.emplace(handle->mod_id, handle);
         lua_mod_multiplayer_infos.emplace(handle->mod_id, multiplayer_info);
 
-        LOG_INFO("Lua mod loaded: {} v{} ({}), entry={}",
-                 handle->info.pkg_id, handle->info.version, handle->mod_id, handle->entry);
+        LOG_INFO("Lua mod loaded: {} v{} ({}), entry={}", handle->info.pkg_id, handle->info.version, handle->mod_id,
+                 handle->entry);
         return ML_SUCCESS;
     } catch (const nlohmann::json::parse_error &e) {
         LOG_ERROR("JSON parse error while loading mod {}: {}", mod_manifest->mod_id, e.what());
@@ -148,6 +154,9 @@ ml_result_t lualoader::core::load_mod(mod_manifest_t *mod_manifest) {
     return ML_ERROR;
 }
 
+/// 卸载一个 Lua Mod（由内核在禁用/退出时调用）。
+/// 顺序：先跑 mod.cleanup，再 close（注销钩子/回调 → 关状态机 → 释放原生库），
+/// 最后释放联机信息并移出表。
 ml_result_t lualoader::core::unload_mod(mod_manifest_t *mod_manifest) {
     if (!mod_manifest || !mod_manifest->mod_id) {
         LOG_ERROR("unload_mod: null manifest or mod_id");
@@ -181,14 +190,18 @@ ml_result_t lualoader::core::unload_mod(mod_manifest_t *mod_manifest) {
     return ML_SUCCESS;
 }
 
+/// 依次调用所有 Mod 的 mod.on_gui（由 GUI 每帧渲染时调用）。
 void lualoader::core::call_all_on_gui() {
-    for (auto &kv: lua_mod_handles) {
+    for (auto &kv : lua_mod_handles) {
         lua_engine::call_on_gui(kv.second);
     }
 }
 
+/// 执行 Mod 的 todo_list（通用 → 平台 → 平台+架构），再调用 mod.init。
+/// 由内核在 load_mod 成功后调用。
 ml_result_t lualoader::core::init_mod(mod_manifest_t *mod_manifest) {
-    if (!mod_manifest || !mod_manifest->mod_id) return ML_ERROR_INVALID_PARAM;
+    if (!mod_manifest || !mod_manifest->mod_id)
+        return ML_ERROR_INVALID_PARAM;
     LOG_INFO("Initializing Lua mod: {}", mod_manifest->mod_id);
 
     const auto it = lua_mod_handles.find(mod_manifest->mod_id);
@@ -203,7 +216,8 @@ ml_result_t lualoader::core::init_mod(mod_manifest_t *mod_manifest) {
 }
 
 const multiplayer_mod_info_t *lualoader::core::get_multiplayer_info(mod_manifest_t *mod_manifest) {
-    if (!mod_manifest || !mod_manifest->mod_id) return nullptr;
+    if (!mod_manifest || !mod_manifest->mod_id)
+        return nullptr;
     const auto it = lua_mod_multiplayer_infos.find(mod_manifest->mod_id);
     if (it == lua_mod_multiplayer_infos.end()) {
         LOG_WARN("Multiplayer info not found for mod: {}", mod_manifest->mod_id);
@@ -213,24 +227,27 @@ const multiplayer_mod_info_t *lualoader::core::get_multiplayer_info(mod_manifest
 }
 
 namespace {
-    bool g_ml_inited = false; // init_ml 幂等（内核可能调用两次）
+bool g_ml_inited = false; // init_ml 幂等（内核可能调用两次）
 } // namespace
 
 /// 内核收到的 Mod 消息 → 对应 Mod 的 mod.net.on(channel)(payload, player)
-static void on_mod_message(const char *mod_id, const char *channel,
-                           const uint8_t *data, int len, int player) {
-    if (!mod_id) return;
+static void on_mod_message(const char *mod_id, const char *channel, const uint8_t *data, int len, int player) {
+    if (!mod_id)
+        return;
     const auto it = lualoader::core::lua_mod_handles.find(mod_id);
-    if (it == lualoader::core::lua_mod_handles.end() || !it->second) return;
+    if (it == lualoader::core::lua_mod_handles.end() || !it->second)
+        return;
     lualoader::lua_mod_handle_t *h = it->second;
-    if (!h->L) return;
+    if (!h->L)
+        return;
 
     const auto cb = h->net_recv_refs.find(channel ? channel : "");
-    if (cb == h->net_recv_refs.end()) return;   // 该频道没注册回调，忽略
+    if (cb == h->net_recv_refs.end())
+        return; // 该频道没注册回调，忽略
 
     lua_State *L = h->L;
     lua_rawgeti(L, LUA_REGISTRYINDEX, cb->second);
-    lua_pushlstring(L, reinterpret_cast<const char *>(data), (size_t) len);
+    lua_pushlstring(L, reinterpret_cast<const char *>(data), (size_t)len);
     lua_pushinteger(L, player);
     if (lua_pcall(L, 2, 0, 0) != LUA_OK) {
         const char *err = lua_tostring(L, -1);
@@ -239,6 +256,10 @@ static void on_mod_message(const char *mod_id, const char *channel,
     }
 }
 
+/// 加载器初始化（内核启动时调用；幂等，重复调用直接忽略）。
+///
+/// 负责：日志、联机消息回调、Android 原生按键、GUI 渲染钩子。
+/// 注意：服务端没有 GraphicsDevice/spriteBatch，必须跳过 GUI 安装。
 ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     LOG_INFO("Initializing LuaLoader...");
     LOG_DEBUG("Platform: {}, Architecture: {}", LUALOADER_PLATFORM_NAME, LUALOADER_ARCH_NAME);
@@ -256,7 +277,8 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     terraria_net_set_mod_message_handler(on_mod_message);
 
 #if defined(__ANDROID__)
-    if(ml_entry && ml_entry->private_dir)controls::configure_storage(ml_entry->private_dir);
+    if (ml_entry && ml_entry->private_dir)
+        controls::configure_storage(ml_entry->private_dir);
     controls::install();
 #endif
     // 读取加载器隐藏配置（<private_dir>/config.json），按需开启调试工具
@@ -264,7 +286,6 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
 #ifdef LUALOADER_GUI
         gui::configure_storage(ml_entry->private_dir);
 #endif
-
     }
 
 #ifdef LUALOADER_GUI
@@ -282,7 +303,9 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     return ML_SUCCESS;
 }
 
-    ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
+/// 加载器关闭（内核退出/重载时调用）。
+/// 逆序拆掉 init_ml 建立的东西：联机回调 → GUI → 所有 Mod → 全局回调 → 日志。
+ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
     LOG_INFO("Cleaning up LuaLoader...");
 
     terraria_net_set_mod_message_handler(nullptr);
@@ -291,7 +314,7 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     gui::shutdown();
 #endif
 
-    for (auto &entry: lua_mod_handles) {
+    for (auto &entry : lua_mod_handles) {
         lua_engine::call_cleanup(entry.second);
         lua_engine::close(entry.second);
         delete entry.second;
@@ -300,7 +323,7 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
 
     lua_api::shutdown_global_hooks();
 
-    for (auto &entry: lua_mod_multiplayer_infos) {
+    for (auto &entry : lua_mod_multiplayer_infos) {
         free(const_cast<char *>(entry.second->mod_id));
         free(const_cast<char *>(entry.second->version));
         delete entry.second;
@@ -316,14 +339,10 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     return ML_SUCCESS;
 }
 
+/// 返回加载器自身的元信息（版本号需与 Info.json 保持一致）。
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
-            "lzup333.lualoader",
-            44,
-            "3.0.0",
-            1,
-            0,
-            nullptr,
+        "lzup333.lualoader", 44, "3.0.0", 1, 0, nullptr,
     };
     return &info;
 }

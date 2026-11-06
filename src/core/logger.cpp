@@ -33,14 +33,22 @@
 
 static spdlog::level::level_enum convert_log_level(const mod_log_level_t level) {
     switch (level) {
-        case MOD_LOG_LEVEL_TRACE:    return spdlog::level::trace;
-        case MOD_LOG_LEVEL_DEBUG:    return spdlog::level::debug;
-        case MOD_LOG_LEVEL_INFO:     return spdlog::level::info;
-        case MOD_LOG_LEVEL_WARNING:  return spdlog::level::warn;
-        case MOD_LOG_LEVEL_ERROR:    return spdlog::level::err;
-        case MOD_LOG_LEVEL_CRITICAL: return spdlog::level::critical;
-        case MOD_LOG_LEVEL_FATAL:    return spdlog::level::critical;
-        default:                     return spdlog::level::info;
+    case MOD_LOG_LEVEL_TRACE:
+        return spdlog::level::trace;
+    case MOD_LOG_LEVEL_DEBUG:
+        return spdlog::level::debug;
+    case MOD_LOG_LEVEL_INFO:
+        return spdlog::level::info;
+    case MOD_LOG_LEVEL_WARNING:
+        return spdlog::level::warn;
+    case MOD_LOG_LEVEL_ERROR:
+        return spdlog::level::err;
+    case MOD_LOG_LEVEL_CRITICAL:
+        return spdlog::level::critical;
+    case MOD_LOG_LEVEL_FATAL:
+        return spdlog::level::critical;
+    default:
+        return spdlog::level::info;
     }
 }
 
@@ -134,21 +142,37 @@ void lualoader::logger::shutdown_mod() {
 }
 
 void lualoader::logger::write(const mod_log_level_t level, const char *tag, const char *message) {
-    if (!message) return;
+    if (!message)
+        return;
 
     auto logger = g_mod_logger ? g_mod_logger : g_logger;
-    if (!logger) return;
+    if (!logger)
+        return;
 
     std::string text = (tag && tag[0] != '\0') ? std::string("[") + tag + "] " + message : message;
 
     switch (convert_log_level(level)) {
-        case spdlog::level::trace:    logger->trace(text); break;
-        case spdlog::level::debug:    logger->debug(text); break;
-        case spdlog::level::info:     logger->info(text); break;
-        case spdlog::level::warn:     logger->warn(text); break;
-        case spdlog::level::err:      logger->error(text); break;
-        case spdlog::level::critical: logger->critical(text); break;
-        default:                      logger->info(text); break;
+    case spdlog::level::trace:
+        logger->trace(text);
+        break;
+    case spdlog::level::debug:
+        logger->debug(text);
+        break;
+    case spdlog::level::info:
+        logger->info(text);
+        break;
+    case spdlog::level::warn:
+        logger->warn(text);
+        break;
+    case spdlog::level::err:
+        logger->error(text);
+        break;
+    case spdlog::level::critical:
+        logger->critical(text);
+        break;
+    default:
+        logger->info(text);
+        break;
     }
 
     if (level == MOD_LOG_LEVEL_FATAL) {
@@ -156,8 +180,10 @@ void lualoader::logger::write(const mod_log_level_t level, const char *tag, cons
     }
 }
 
-void lualoader::logger::lualoader_mod_logger_write_imp(const mod_log_level_t level, const char *tag, const char *fmt, ...) {
-    if (!fmt) return;
+void lualoader::logger::lualoader_mod_logger_write_imp(const mod_log_level_t level, const char *tag, const char *fmt,
+                                                       ...) {
+    if (!fmt)
+        return;
 
     char buffer[4096];
     va_list args;

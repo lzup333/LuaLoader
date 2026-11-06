@@ -26,158 +26,176 @@
 
 namespace {
 
-    patch_handle_t g_kb = PATCH_NULL; // TouchScreenKeyboard 实例
-    unsigned int g_kb_root = 0;
+patch_handle_t g_kb = PATCH_NULL; // TouchScreenKeyboard 实例
+unsigned int g_kb_root = 0;
 
-    patch_handle_t t_kb = PATCH_NULL;
-    patch_handle_t m_open = PATCH_NULL;       // static Open(text, type, autocorrect, multiline, secure, alert, placeholder, limit)
-    patch_handle_t m_get_text = PATCH_NULL;
-    patch_handle_t m_get_status = PATCH_NULL; // Status: 0 Visible, 1 Done, 2 Canceled, 3 LostFocus
-    patch_handle_t m_set_active = PATCH_NULL;
-    patch_handle_t m_destroy = PATCH_NULL;
-    patch_handle_t m_set_hide = PATCH_NULL;   // static set_hideInput(bool)
+patch_handle_t t_kb = PATCH_NULL;
+patch_handle_t m_open =
+    PATCH_NULL; // static Open(text, type, autocorrect, multiline, secure, alert, placeholder, limit)
+patch_handle_t m_get_text = PATCH_NULL;
+patch_handle_t m_get_status = PATCH_NULL; // Status: 0 Visible, 1 Done, 2 Canceled, 3 LostFocus
+patch_handle_t m_set_active = PATCH_NULL;
+patch_handle_t m_destroy = PATCH_NULL;
+patch_handle_t m_set_hide = PATCH_NULL; // static set_hideInput(bool)
 
-    bool g_resolved = false;
+bool g_resolved = false;
 
-    void resolve() {
-        if (g_resolved) return;
-        g_resolved = true;
+void resolve() {
+    if (g_resolved)
+        return;
+    g_resolved = true;
 
-        t_kb = patchlib_type_get_type("UnityEngine", "TouchScreenKeyboard");
-        if (!patchlib_is_valid(t_kb)) {
-            LOG_WARN("[ime] UnityEngine.TouchScreenKeyboard 不可用");
-            return;
-        }
-        m_open = patchlib_type_get_method_by_param_count(t_kb, "Open", 8);
-        m_get_text = patchlib_type_get_method_by_param_count(t_kb, "get_text", 0);
-        m_get_status = patchlib_type_get_method_by_param_count(t_kb, "get_status", 0);
-        m_set_active = patchlib_type_get_method_by_param_count(t_kb, "set_active", 1);
-        m_destroy = patchlib_type_get_method_by_param_count(t_kb, "Destroy", 0);
-        m_set_hide = patchlib_type_get_method_by_param_count(t_kb, "set_hideInput", 1);
+    t_kb = patchlib_type_get_type("UnityEngine", "TouchScreenKeyboard");
+    if (!patchlib_is_valid(t_kb)) {
+        LOG_WARN("[ime] UnityEngine.TouchScreenKeyboard 不可用");
+        return;
     }
+    m_open = patchlib_type_get_method_by_param_count(t_kb, "Open", 8);
+    m_get_text = patchlib_type_get_method_by_param_count(t_kb, "get_text", 0);
+    m_get_status = patchlib_type_get_method_by_param_count(t_kb, "get_status", 0);
+    m_set_active = patchlib_type_get_method_by_param_count(t_kb, "set_active", 1);
+    m_destroy = patchlib_type_get_method_by_param_count(t_kb, "Destroy", 0);
+    m_set_hide = patchlib_type_get_method_by_param_count(t_kb, "set_hideInput", 1);
+}
 
-    std::string managed_to_utf8(patch_handle_t str) {
-        if (!patchlib_is_valid(str)) return {};
-        char *c = patchlib_string_cstr(str);
-        if (!c) return {};
-        std::string s(c);
-        std::free(c);
-        return s;
-    }
+std::string managed_to_utf8(patch_handle_t str) {
+    if (!patchlib_is_valid(str))
+        return {};
+    char *c = patchlib_string_cstr(str);
+    if (!c)
+        return {};
+    std::string s(c);
+    std::free(c);
+    return s;
+}
 
 } // namespace
 
 namespace lualoader::gui::ime {
 
-    bool supported() {
-        resolve();
-        return patchlib_is_valid(m_open);
+bool supported() {
+    resolve();
+    return patchlib_is_valid(m_open);
+}
+
+void open(const std::string &initial) {
+    resolve();
+    if (!patchlib_is_valid(m_open))
+        return;
+    close();
+
+    // 隐藏原生输入框（我们自绘文本）
+    if (patchlib_is_valid(m_set_hide)) {
+        bool hide = true;
+        void *a[1] = {&hide};
+        patchlib_method_invoke_args(m_set_hide, PATCH_NULL, NULL, a);
     }
 
-    void open(const std::string &initial) {
-        resolve();
-        if (!patchlib_is_valid(m_open)) return;
-        close();
+    patch_handle_t text = patchlib_string_create(initial.c_str());
+    patch_handle_t placeholder = patchlib_string_create("");
+    int keyboard_type = 0; // TouchScreenKeyboardType.Default
+    bool autocorrect = false, multiline = false, secure = false, alert = false;
+    int char_limit = 0;
+    void *args[8] = {&text, &keyboard_type, &autocorrect, &multiline, &secure, &alert, &placeholder, &char_limit};
 
-        // 隐藏原生输入框（我们自绘文本）
-        if (patchlib_is_valid(m_set_hide)) {
-            bool hide = true;
-            void *a[1] = {&hide};
-            patchlib_method_invoke_args(m_set_hide, PATCH_NULL, NULL, a);
-        }
+    patch_handle_t kb = PATCH_NULL;
+    patchlib_method_invoke_args(m_open, PATCH_NULL, &kb, args); // static
+    patchlib_free(text);
+    patchlib_free(placeholder);
 
-        patch_handle_t text = patchlib_string_create(initial.c_str());
-        patch_handle_t placeholder = patchlib_string_create("");
-        int keyboard_type = 0; // TouchScreenKeyboardType.Default
-        bool autocorrect = false, multiline = false, secure = false, alert = false;
-        int char_limit = 0;
-        void *args[8] = {&text, &keyboard_type, &autocorrect, &multiline,
-                         &secure, &alert, &placeholder, &char_limit};
-
-        patch_handle_t kb = PATCH_NULL;
-        patchlib_method_invoke_args(m_open, PATCH_NULL, &kb, args); // static
-        patchlib_free(text);
-        patchlib_free(placeholder);
-
-        if (patchlib_is_valid(kb)) {
-            g_kb = kb;
-            g_kb_root = images::retain_object(kb);
-            if (!g_kb_root) {
-                close();
-                LOG_ERROR("[ime] 无法建立键盘 GC 强引用");
-                return;
-            }
-            LOG_INFO("[ime] keyboard GC root={}", g_kb_root);
-            LOG_INFO("[ime] 系统软键盘已弹出");
-        } else {
-            LOG_WARN("[ime] TouchScreenKeyboard.Open 失败");
-        }
-    }
-
-    void close() {
-        resolve();
-        /* g_kb 为 null 是正常状态（例如没有打开系统输入法）；
-         * 不要用 patchlib_is_valid 做空值判断，否则每帧 render close 会刷 WARN。 */
-        if (!g_kb) return;
-        if (patchlib_is_valid(m_set_active)) {
-            bool active = false;
-            void *a[1] = {&active};
-            patchlib_method_invoke_args(m_set_active, g_kb, NULL, a);
-        }
-        if (patchlib_is_valid(m_destroy))
-            patchlib_method_invoke_args(m_destroy, g_kb, NULL, NULL);
-        patchlib_free(g_kb);
-        g_kb = PATCH_NULL;
-        images::release_object(g_kb_root);
-        g_kb_root = 0;
-    }
-
-    void shutdown() {
-        close();
-        patchlib_free(t_kb);
-        patchlib_free(m_open);
-        patchlib_free(m_get_text);
-        patchlib_free(m_get_status);
-        patchlib_free(m_set_active);
-        patchlib_free(m_destroy);
-        patchlib_free(m_set_hide);
-        t_kb = m_open = m_get_text = m_get_status = PATCH_NULL;
-        m_set_active = m_destroy = m_set_hide = PATCH_NULL;
-        g_resolved = false;
-    }
-
-    int poll(std::string &text) {
-        resolve();
-        if (!patchlib_is_valid(g_kb)) return 1;
-
-        if (patchlib_is_valid(m_get_text)) {
-            patch_handle_t s = PATCH_NULL;
-            patchlib_method_invoke_args(m_get_text, g_kb, &s, NULL);
-            text = managed_to_utf8(s);
-            if (patchlib_is_valid(s)) patchlib_free(s);
-        }
-
-        int status = 0;
-        if (patchlib_is_valid(m_get_status))
-            patchlib_method_invoke_args(m_get_status, g_kb, &status, NULL);
-
-        if (status != 0) {
+    if (patchlib_is_valid(kb)) {
+        g_kb = kb;
+        g_kb_root = images::retain_object(kb);
+        if (!g_kb_root) {
             close();
-            return status;
+            LOG_ERROR("[ime] 无法建立键盘 GC 强引用");
+            return;
         }
-        return 0;
+        LOG_INFO("[ime] keyboard GC root={}", g_kb_root);
+        LOG_INFO("[ime] 系统软键盘已弹出");
+    } else {
+        LOG_WARN("[ime] TouchScreenKeyboard.Open 失败");
     }
+}
+
+void close() {
+    resolve();
+    /* g_kb 为 null 是正常状态（例如没有打开系统输入法）；
+     * 不要用 patchlib_is_valid 做空值判断，否则每帧 render close 会刷 WARN。 */
+    if (!g_kb)
+        return;
+    if (patchlib_is_valid(m_set_active)) {
+        bool active = false;
+        void *a[1] = {&active};
+        patchlib_method_invoke_args(m_set_active, g_kb, NULL, a);
+    }
+    if (patchlib_is_valid(m_destroy))
+        patchlib_method_invoke_args(m_destroy, g_kb, NULL, NULL);
+    patchlib_free(g_kb);
+    g_kb = PATCH_NULL;
+    images::release_object(g_kb_root);
+    g_kb_root = 0;
+}
+
+void shutdown() {
+    close();
+    patchlib_free(t_kb);
+    patchlib_free(m_open);
+    patchlib_free(m_get_text);
+    patchlib_free(m_get_status);
+    patchlib_free(m_set_active);
+    patchlib_free(m_destroy);
+    patchlib_free(m_set_hide);
+    t_kb = m_open = m_get_text = m_get_status = PATCH_NULL;
+    m_set_active = m_destroy = m_set_hide = PATCH_NULL;
+    g_resolved = false;
+}
+
+int poll(std::string &text) {
+    resolve();
+    if (!patchlib_is_valid(g_kb))
+        return 1;
+
+    if (patchlib_is_valid(m_get_text)) {
+        patch_handle_t s = PATCH_NULL;
+        patchlib_method_invoke_args(m_get_text, g_kb, &s, NULL);
+        text = managed_to_utf8(s);
+        if (patchlib_is_valid(s))
+            patchlib_free(s);
+    }
+
+    int status = 0;
+    if (patchlib_is_valid(m_get_status))
+        patchlib_method_invoke_args(m_get_status, g_kb, &status, NULL);
+
+    if (status != 0) {
+        close();
+        return status;
+    }
+    return 0;
+}
 
 } // namespace lualoader::gui::ime
 
 #else // 非 Android：桩
 
 namespace lualoader::gui::ime {
-    bool supported() { return false; }
-    void open(const std::string &) {}
-    void close() {}
-    int poll(std::string &) { return 1; }
-    void shutdown() {}
+bool supported() {
+    return false;
+}
+
+void open(const std::string &) {
+}
+
+void close() {
+}
+
+int poll(std::string &) {
+    return 1;
+}
+
+void shutdown() {
+}
 } // namespace lualoader::gui::ime
 
 #endif
