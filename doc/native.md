@@ -55,38 +55,67 @@ int luaopen_hello(lua_State *L) {
 
 头文件目录：`<LuaLoader>/lib/lua-5.5.1/src`。
 
+**模块必须记录对 loader 的依赖**：
+
+- Linux / Android：链接 loader 的 `.so`，让模块产生 `DT_NEEDED libloader.<平台>.<架构>.so`；
+- Windows：链接 loader 的导入库。
+
 ```bash
 INC=-I<LuaLoader>/lib/lua-5.5.1/src
 
-# Linux：不要链接 liblua；lua_* 在运行时由 loader 解析
-clang -O2 -fPIC -shared -o hello.so hello.c $INC
+# Linux：链接 loader .so（写入 DT_NEEDED）；不要链接 liblua
+clang -O2 -fPIC -shared -o hello.so hello.c $INC \
+  -L<SDK>/loader/linux_x64 -Wl,-l:libloader.linux.x64.so
 
-# Android：同样不要链接 liblua
+# Android：链接对应架构的 loader .so
 $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang \
-  -O2 -fPIC -shared -o hello.so hello.c $INC
+  -O2 -fPIC -shared -o hello.so hello.c $INC \
+  -L<SDK>/loader/android_arm64 -Wl,-l:libloader.android.arm64.so
 
-# Windows：链接 loader 的导入库（否则 lua_* 无法解析）
+# Windows：链接 loader 的导入库
 x86_64-w64-mingw32-gcc -O2 -shared -o hello.dll hello.c $INC \
   <SDK>/windows_x64/libloader.windows.x64.dll.a
 ```
 
-Windows 导入库不随源码仓库分发，请从 Releases 下载 `LuaLoader-sdk-v<版本>.zip`，
-解压后把其中的 `sdk/` 目录当作上面的 `<SDK>`。需要自行生成时：
-`./build.sh win-x64 win-x86 --implib --sdk-zip`。
+> **为什么必须链接 loader？**
+> Android 上内核以 `RTLD_LOCAL` 从 memfd 加载 loader，`lua_*` 符号不在全局作用域。
+> 模块如果只是留下未定义的 `lua_*`，`dlopen` 会报 `cannot locate symbol "lua_..."`。
+> 链接 loader 后模块带着 `DT_NEEDED`，bionic 会把**已加载的 loader**当作模块的直接依赖，
+> 在模块自己的 local group 里解析符号——这比 `RTLD_GLOBAL` 提升可靠（对已加载库提升无效）。
+
+SDK 压缩包 `LuaLoader-sdk-v<版本>.zip` 提供链接所需文件：
+
+```
+sdk/windows_x64/libloader.windows.x64.dll.a
+sdk/windows_x86/libloader.windows.x86.dll.a
+sdk/loader/linux_x64/libloader.linux.x64.so
+sdk/loader/linux_x86/libloader.linux.x86.so
+sdk/loader/android_arm64/libloader.android.arm64.so
+sdk/loader/android_arm/libloader.android.arm.so
+```
+
+需要自行生成时：`./build.sh all --sdk-zip`。
 
 > 不要把 Lua 静态库/动态库链接进模块——那会导致模块里出现第二份 Lua 运行时，
-> 与加载器的 `lua_State` 不兼容。Linux/Android 保持 `lua_*` 未定义即可。
+> 与加载器的 `lua_State` 不兼容。链接 loader 只是为了拿到 `lua_*` 符号。
 
 打包即普通 Mod 目录：`Resources/lib/main.lua` + `Resources/native/<平台>_<架构>/hello.so`。
 
 ## 排查
 
 - `require` 失败会返回错误字符串（找不到模块、符号缺失、架构不匹配等）；
-- Windows 提示缺少 `lua_*` 符号：确认链接了对应架构的 `libloader.*.dll.a`；
-- Linux/Android 提示 `undefined symbol: lua_*`：确认没有把模块用 `-Wl,-z,defs` 之类强制解析，
-  且 loader 版本与模块编译时使用的 Lua 头文件一致；
+- `cannot locate symbol "lua_*"`：模块没有链接 loader。用
+  `readelf -d hello.so | grep NEEDED` 确认有 `libloader.<平台>.<架构>.so`；
+- `version mismatch`：模块与 loader 的 Lua 版本不一致，用 `lib/lua-5.5.1/src` 重编；
+- `module 'hello' not found`：检查 `Resources/native/<平台>_<架构>/` 目录名与设备架构；
 - 报 `dynamic libraries not enabled` 表示内置 Lua 没开 `LUA_USE_DLOPEN`（本项目已开）。
 
 ## 安全
 
 原生模块等于在游戏进程内执行任意原生代码，风险高于纯 Lua。请只安装信任来源的 Mod。
+
+## 完整测试 Mod
+
+完整可复制的测试 Mod（清单、Lua、C 模块、三平台编译命令、预期日志）见
+[`native-test-mod.md`](native-test-mod.md)：用标准 C 模块把日志追加到
+`mod.private_dir/native_test.log`。

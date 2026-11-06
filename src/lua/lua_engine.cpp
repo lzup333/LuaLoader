@@ -81,26 +81,6 @@ namespace lualoader::lua_engine {
         if (pkg.empty()) return {};
         return "/data/data/" + pkg + "/files";
     }
-
-    /// 把自身（loader）提升到 RTLD_GLOBAL：
-    /// 内核用 RTLD_LOCAL 从 memfd 加载 loader，导致 dlopen 的模块解析不到 loader 导出的
-    /// lua_* / patchlib_* 符号。用 SONAME + RTLD_NOLOAD|RTLD_GLOBAL 可把已加载的自身提升为全局。
-    static void promote_self_global() {
-        static bool tried = false;
-        if (tried) return;
-        tried = true;
-#if defined(__ANDROID__)
-        const std::string soname =
-                std::string("libloader.") + LUALOADER_PLATFORM_NAME + "." + LUALOADER_ARCH_NAME + ".so";
-        void *h = dlopen(soname.c_str(), RTLD_NOW | RTLD_NOLOAD | RTLD_GLOBAL);
-        if (h) {
-            LOG_INFO("[native] 已将自身提升为 RTLD_GLOBAL ({}): {}", soname, h);
-        } else {
-            const char *e = dlerror();
-            LOG_WARN("[native] 提升自身为 GLOBAL 失败: {} ({})", soname, e ? e : "?");
-        }
-#endif
-    }
 #endif
 
     // Preserve the search order and publish complete files without truncating mapped libraries.
@@ -185,7 +165,6 @@ namespace lualoader::lua_engine {
                                                         const std::string &mod_id) {
         std::vector<std::string> src_dirs = native_dirs(mod_dir, private_dir, platform, arch);
 #if defined(__ANDROID__)
-        promote_self_global();
         const std::string base = android_app_private_dir();
         if (base.empty()) return src_dirs; // 拿不到私有目录就退回原路径（大概率仍会失败）
         std::string safe_id = mod_id;

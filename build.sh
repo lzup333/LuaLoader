@@ -172,6 +172,20 @@ copy_implib() {
   esac
 }
 
+# Linux/Android 原生模块需要链接 loader 的 .so 以写入 DT_NEEDED。
+copy_sdk_loader() {
+  local p="$1" dir art platdir
+  dir="$(builddir_of "$p")"; art="$(artifact_of "$p")"
+  case "$p" in
+    linux-*)   platdir="linux_${p#linux-}" ;;
+    android-*) platdir="android_${p#android-}" ;;
+    *) return 0 ;;
+  esac
+  [ -f "$dir/$art" ] || return 0
+  run mkdir -p "$ROOT/sdk/loader/$platdir"
+  run cp -f "$dir/$art" "$ROOT/sdk/loader/$platdir/"
+}
+
 # ---------- 打包 ----------
 package() {
   local stage="$ROOT/build/tefpkg-stage"
@@ -222,11 +236,11 @@ package_sdk() {
   zip="$ROOT/dist/LuaLoader-sdk-v$ver.zip"
 
   if [ ! -d "$ROOT/sdk" ]; then
-    err "没有 sdk/ 目录：先构建 Windows 平台并加 --implib 生成导入库"
+    err "没有 sdk/ 目录：先构建至少一个平台（Windows 导入库 / Linux、Android loader .so）"
     return 1
   fi
-  if [ -z "$(find "$ROOT/sdk" -name '*.a' -print -quit)" ]; then
-    err "sdk/ 下没有导入库：先构建 Windows 平台并加 --implib"
+  if [ -z "$(find "$ROOT/sdk" -type f -print -quit)" ]; then
+    err "sdk/ 下没有可用文件：先构建 Windows（--implib）或 Linux/Android 平台"
     return 1
   fi
 
@@ -250,6 +264,7 @@ if [ "$PACKAGE_ONLY" != 1 ]; then
   # 默认也刷新一下 Windows 导入库（若刚构建过 win）
   for p in "${PLATFORMS[@]}"; do
     case "$p" in win-x64|win-x86) copy_implib "$p" ;; esac
+    copy_sdk_loader "$p"
   done
   if [ ${#FAILED[@]} -gt 0 ]; then
     err "以下平台构建失败：${FAILED[*]}"

@@ -12,7 +12,8 @@ _deps
 CMakeUserPresets.json
 build
 cmake-build-*
-
+examples/
+Examples/
 # 打包/发布产物
 dist
 Cache
@@ -29,3 +30,5 @@ libtefkernel.*.so
 /sdk/
 
 *__pycache__*
+
+*testmods*
