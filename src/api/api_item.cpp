@@ -38,6 +38,23 @@ struct LuaItemEntry {
     int recipe_station;
     std::map<int, std::pair<std::string, std::string>> lang;
     patch_handle_t use_sound; // SoundID.ItemN 的 LegacySoundStyle 对象
+    std::string equip_slot;   // back / front / neck / ...
+    std::string equip_texture_path;
+    std::vector<unsigned char> equip_pixels;
+    int equip_w, equip_h;
+    int equip_slot_index;
+    bool equip_tex_tried;
+    bool equip_tex_done;
+    patch_handle_t equip_asset;   // 持有到内核真正写入 TextureAssets.Acc*
+    void *equip_asset_root;       // Android GC 根，防止挂起期间 Asset 被回收
+    patch_handle_t f_equip_slot;
+    bool has_wing_stats;
+    int wing_fly_time;
+    float wing_speed;
+    float wing_acceleration;
+    bool wing_hover;
+    float wing_hover_speed;
+    float wing_hover_acceleration;
     bool registered;
     int runtime_id;
 };
@@ -65,6 +82,66 @@ void item_field_write(const patch_handle_t field, const patch_handle_t inst, con
 }
 
 /// Item.SetDefaults 回调：把注册时记录的默认字段和可选 Lua 回调写回新实例。
+static void lua_item_ensure_equip_texture(LuaItemEntry *e) {
+    if (!e || e->equip_tex_done || e->equip_slot_index < 0 ||
+        e->equip_texture_path.empty())
+        return;
+    if (!e->equip_tex_tried) {
+        e->equip_tex_tried = true;
+        if (!image::decode_png_file(e->equip_texture_path, e->equip_pixels,
+                                    e->equip_w, e->equip_h))
+            LOG_WARN("[mod.item] {}: 外观贴图解码失败 {}", e->name, e->equip_texture_path);
+    }
+    if (e->equip_pixels.empty() || e->equip_w <= 0 || e->equip_h <= 0)
+        return;
+
+    const size_t w = static_cast<size_t>(e->equip_w);
+    const size_t h = static_cast<size_t>(e->equip_h);
+    const size_t sz = w * h * 4;
+    auto *buf = static_cast<unsigned char *>(malloc(sz));
+    if (!buf) return;
+#if defined(__ANDROID__)
+    for (size_t y = 0; y < h; ++y)
+        std::memcpy(buf + y * w * 4, e->equip_pixels.data() + (h - 1 - y) * w * 4, w * 4);
+#else
+    std::memcpy(buf, e->equip_pixels.data(), sz);
+#endif
+    premultiply_alpha(buf, sz);
+    patch_handle_t tex = terraria_texture2d_create(
+            e->equip_w, e->equip_h, TEXTURE_FORMAT_RGBA32, buf, sz);
+    free(buf);
+    if (!patchlib_is_valid(tex)) return;
+
+    patch_handle_t tex_type = terraria_texture2d_get_class();
+    patch_handle_t asset = terraria_asset_create(tex_type, tex);
+    if (patchlib_is_valid(tex_type)) patchlib_free(tex_type);
+    if (patchlib_is_valid(tex)) patchlib_free(tex);
+    if (!patchlib_is_valid(asset)) return;
+
+    /* Android 上 patch_handle_t 只是裸对象指针；内核会先把 Asset 挂起，
+     * 等 init_texture2d 后才写进数组。这段空窗期里没有任何托管引用，
+     * GC 可能把 Asset（连同里面的 Texture2D）回收掉，写进数组后就是
+     * 悬空指针，表现正是“贴图看不见”。这里必须先建 GC 强引用。 */
+#if defined(__ANDROID__)
+    void *asset_root = patchlib_object_root(asset);
+#else
+    void *asset_root = nullptr;
+#endif
+
+    if (terraria_item_manager_set_accessory_texture &&
+        terraria_item_manager_set_accessory_texture(
+                e->equip_slot.c_str(), e->equip_slot_index, asset)) {
+        e->equip_tex_done = true;
+        e->equip_asset = asset;
+        e->equip_asset_root = asset_root;
+    } else {
+#if defined(__ANDROID__)
+        patchlib_object_unroot(asset_root);
+#endif
+        patchlib_free(asset);
+    }
+}
+
 static void lua_item_set_defaults(terraria_item_handle_t *current, const patch_handle_t inst) {
     LuaItemEntry *e = item_from_handle(current);
     if (!e || !inst)
@@ -77,6 +154,19 @@ static void lua_item_set_defaults(terraria_item_handle_t *current, const patch_h
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->defaults_ref);
         push_handle(L, inst);
         pcall_log(L, 1, 0, "mod.item.defaults"); // pcall_log already consumes errors
+    }
+
+    /* 外观饰品：把 Item.<slot>Slot 指向预留下的槽位，并懒加载贴图 */
+    if (e->equip_slot_index >= 0) {
+        lua_item_ensure_equip_texture(e);
+        bool ready = true;
+        if (terraria_item_manager_accessory_texture_ready)
+            ready = terraria_item_manager_accessory_texture_ready(
+                    e->equip_slot.c_str(), e->equip_slot_index);
+        if (ready && patchlib_is_valid(e->f_equip_slot)) {
+            int idx = e->equip_slot_index;
+            patchlib_field_set_value(e->f_equip_slot, inst, &idx);
+        }
     }
 
     /* use_sound：每次 SetDefaults 都重新写，避免原版/其它 Mod 把它覆盖掉。
@@ -148,6 +238,7 @@ static patch_handle_t lua_item_get_texture(terraria_item_handle_t *current) {
     LuaItemEntry *e = item_from_handle(current);
     if (!e)
         return PATCH_NULL;
+    lua_item_ensure_equip_texture(e);
     if (!e->tex_tried) {
         e->tex_tried = true;
         if (!e->texture_path.empty() && !image::decode_png_file(e->texture_path, e->tex_pixels, e->tex_w, e->tex_h))
@@ -410,6 +501,21 @@ static int l_item_register(lua_State *L) {
     e->use_sound = PATCH_NULL;
     e->tex_w = e->tex_h = 0;
     e->tex_tried = false;
+    e->equip_w = e->equip_h = 0;
+    e->equip_slot_index = -1;
+    e->equip_tex_tried = false;
+    e->equip_tex_done = false;
+    e->equip_asset = PATCH_NULL;
+    e->equip_asset_root = nullptr;
+    e->f_equip_slot = PATCH_NULL;
+    e->has_wing_stats = false;
+    // 默认复制雏翼（CreativeWings）的 WingStats
+    e->wing_fly_time = 25;
+    e->wing_speed = 3.0f;
+    e->wing_acceleration = 1.0f;
+    e->wing_hover = false;
+    e->wing_hover_speed = -1.0f;
+    e->wing_hover_acceleration = 1.0f;
     e->has_recipe = false;
     e->recipe_stack = 1;
     e->recipe_station = -1;
@@ -624,6 +730,85 @@ static int l_item_register(lua_State *L) {
     }
     lua_pop(L, 1);
 
+    // equip：{ slot = "back"/"front"/..., texture = "..." } 外观饰品
+    lua_getfield(L, 1, "equip");
+    if (lua_istable(L, -1)) {
+        std::string slot, tex;
+        lua_getfield(L, -1, "slot");
+        if (lua_type(L, -1) == LUA_TSTRING) slot = lua_tostring(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "texture");
+        if (lua_type(L, -1) == LUA_TSTRING) tex = lua_tostring(L, -1);
+        lua_pop(L, 1);
+
+        // wing_stats：{ fly_time, speed, acceleration, hover, hover_speed, hover_acceleration }
+        lua_getfield(L, -1, "wing_stats");
+        if (lua_istable(L, -1)) {
+            e->has_wing_stats = true;
+            lua_getfield(L, -1, "fly_time");
+            if (lua_isnumber(L, -1))
+                e->wing_fly_time = static_cast<int>(lua_tointeger(L, -1));
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "speed");
+            if (lua_isnumber(L, -1))
+                e->wing_speed = static_cast<float>(lua_tonumber(L, -1));
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "acceleration");
+            if (lua_isnumber(L, -1))
+                e->wing_acceleration = static_cast<float>(lua_tonumber(L, -1));
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "hover");
+            if (lua_type(L, -1) == LUA_TBOOLEAN)
+                e->wing_hover = lua_toboolean(L, -1) != 0;
+            else if (lua_isnumber(L, -1))
+                e->wing_hover = lua_tonumber(L, -1) != 0.0;
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "hover_speed");
+            if (lua_isnumber(L, -1))
+                e->wing_hover_speed = static_cast<float>(lua_tonumber(L, -1));
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "hover_acceleration");
+            if (lua_isnumber(L, -1))
+                e->wing_hover_acceleration = static_cast<float>(lua_tonumber(L, -1));
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+
+        if (!slot.empty()) {
+            e->equip_slot = slot;
+            if (terraria_item_manager_reserve_accessory_slot)
+                e->equip_slot_index =
+                        terraria_item_manager_reserve_accessory_slot(slot.c_str());
+            if (e->equip_slot_index < 0) {
+                if (!terraria_item_manager_reserve_accessory_slot)
+                    LOG_WARN("[mod.item] {}: 当前 TEFKernel 不支持外观槽位（缺少 reserve API），请更新内核",
+                             item_name);
+                else
+                    LOG_WARN("[mod.item] {}: 外观槽位 {} 预留失败（看内核日志）",
+                             item_name, slot);
+            } else {
+                if (slot == "wing" && e->has_wing_stats) {
+                    if (terraria_item_manager_set_wing_stats)
+                        terraria_item_manager_set_wing_stats(
+                                e->equip_slot_index, e->wing_fly_time,
+                                e->wing_speed, e->wing_acceleration,
+                                e->wing_hover, e->wing_hover_speed,
+                                e->wing_hover_acceleration);
+                    else
+                        LOG_WARN("[mod.item] {}: 当前 TEFKernel 不支持设置翅膀属性，请更新内核",
+                                 item_name);
+                }
+                if (!tex.empty()) {
+                    e->equip_texture_path = resolve_item_image(
+                            handle->private_dir, handle->mod_dir, tex);
+                    if (e->equip_texture_path.empty())
+                        LOG_WARN("[mod.item] {}: 未找到外观贴图 {}", item_name, tex);
+                }
+            }
+        }
+    }
+    lua_pop(L, 1);
+
     // 组装内核句柄
     e->item.parent_modloader_id = LUALOADER_PKG_ID;
     e->item.parent_id = handle->mod_id.c_str();
@@ -635,6 +820,18 @@ static int l_item_register(lua_State *L) {
     e->item.item_ops.can_use = (e->can_use_ref != LUA_NOREF) ? lua_item_can_use : nullptr;
     e->item.item_ops.use = (e->use_ref != LUA_NOREF) ? lua_item_use : nullptr;
     e->item.item_ops.get_texture = lua_item_get_texture;
+
+    if (e->equip_slot_index >= 0) {
+        static patch_handle_t s_item_cls = PATCH_NULL;
+        if (!patchlib_is_valid(s_item_cls))
+            s_item_cls = patchlib_type_get_type("Terraria", "Item");
+        if (patchlib_is_valid(s_item_cls)) {
+            std::string field_name = e->equip_slot + "Slot";
+            e->f_equip_slot = patchlib_type_get_field(s_item_cls, field_name.c_str());
+        }
+        if (!patchlib_is_valid(e->f_equip_slot))
+            LOG_WARN("[mod.item] {}: 找不到 Item.{}Slot", item_name, e->equip_slot);
+    }
 
     if (!terraria_item_manager_register_item(&e->item)) {
         LOG_ERROR("[mod.item] {}: 注册失败", item_name);

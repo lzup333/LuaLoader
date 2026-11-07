@@ -38,6 +38,10 @@ struct LuaNpcEntry {
     std::vector<unsigned char> tex_pixels;
     int tex_w, tex_h;
     bool tex_tried;
+    std::string boss_head_path;
+    std::vector<unsigned char> boss_head_pixels;
+    int boss_head_w, boss_head_h;
+    bool boss_head_tried;
     bool registered;
     int runtime_id;
 };
@@ -141,6 +145,44 @@ static patch_handle_t lua_npc_get_texture(terraria_npc_handle_t *current) {
     return asset;
 }
 
+static patch_handle_t lua_npc_get_boss_head(terraria_npc_handle_t *current) {
+    LuaNpcEntry *e = npc_from_handle(current);
+    if (!e || e->boss_head_path.empty())
+        return PATCH_NULL;
+    if (!e->boss_head_tried) {
+        e->boss_head_tried = true;
+        if (!image::decode_png_file(e->boss_head_path, e->boss_head_pixels,
+                                    e->boss_head_w, e->boss_head_h))
+            LOG_WARN("[mod.npc] Boss 头像解码失败: {}", e->boss_head_path);
+    }
+    if (e->boss_head_pixels.empty() || e->boss_head_w <= 0 || e->boss_head_h <= 0)
+        return PATCH_NULL;
+
+    const size_t w = static_cast<size_t>(e->boss_head_w);
+    const size_t h = static_cast<size_t>(e->boss_head_h);
+    const size_t sz = w * h * 4;
+    auto *buf = static_cast<unsigned char *>(malloc(sz));
+    if (!buf) return PATCH_NULL;
+#if defined(__ANDROID__)
+    for (size_t y = 0; y < h; ++y)
+        std::memcpy(buf + y * w * 4,
+                    e->boss_head_pixels.data() + (h - 1 - y) * w * 4, w * 4);
+#else
+    std::memcpy(buf, e->boss_head_pixels.data(), sz);
+#endif
+    premultiply_alpha(buf, sz);
+    const patch_handle_t tex = terraria_texture2d_create(
+            e->boss_head_w, e->boss_head_h, TEXTURE_FORMAT_RGBA32, buf, sz);
+    free(buf);
+    if (!patchlib_is_valid(tex)) return PATCH_NULL;
+
+    const patch_handle_t tex_type = terraria_texture2d_get_class();
+    const patch_handle_t asset = terraria_asset_create(tex_type, tex);
+    if (patchlib_is_valid(tex_type)) patchlib_free(tex_type);
+    if (patchlib_is_valid(tex)) patchlib_free(tex);
+    return asset;
+}
+
 /// mod.npc.register{ ... } -> runtime_id
 /// 保存默认字段/回调/贴图/战利品，交给内核分配 NPC 运行时 ID。
 static int l_npc_register(lua_State *L) {
@@ -171,6 +213,8 @@ static int l_npc_register(lua_State *L) {
     e->f_height = PATCH_NULL;
     e->tex_w = e->tex_h = 0;
     e->tex_tried = false;
+    e->boss_head_w = e->boss_head_h = 0;
+    e->boss_head_tried = false;
     e->registered = false;
     e->runtime_id = -1;
 
@@ -266,6 +310,15 @@ static int l_npc_register(lua_State *L) {
     }
     lua_pop(L, 1);
 
+    lua_getfield(L, 1, "boss_head");
+    if (lua_type(L, -1) == LUA_TSTRING) {
+        const char *rel = lua_tostring(L, -1);
+        e->boss_head_path = resolve_item_image(handle->private_dir, handle->mod_dir, rel);
+        if (e->boss_head_path.empty())
+            LOG_WARN("[mod.npc] {}: 未找到 Boss 头像贴图 {}", npc_name, rel);
+    }
+    lua_pop(L, 1);
+
     e->npc.parent_modloader_id = LUALOADER_PKG_ID;
     e->npc.parent_id = handle->mod_id.c_str();
     e->npc.internal_name = e->name.c_str();
@@ -276,6 +329,7 @@ static int l_npc_register(lua_State *L) {
     e->npc.npc_ops.set_defaults = lua_npc_set_defaults;
     e->npc.npc_ops.ai = (e->ai_ref != LUA_NOREF) ? lua_npc_ai : nullptr;
     e->npc.npc_ops.get_texture = lua_npc_get_texture;
+    e->npc.npc_ops.get_boss_head = lua_npc_get_boss_head;
     e->npc.npc_ops.on_death = (e->on_death_ref != LUA_NOREF) ? lua_npc_on_death : nullptr;
     if (!e->loot.empty())
         e->npc.npc_ops.on_death = lua_npc_on_death;

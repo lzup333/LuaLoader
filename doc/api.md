@@ -361,6 +361,7 @@ mod.item.register{
 ```
 
 - `defaults` 字段名与 `Terraria.Item` 一致；值类型不符会打日志忽略。函数形式 `function(item) end`（非托管句柄）。
+- **只写 `use` 回调不会让物品自动可用**：必须同时给合法的 `useStyle` / `useTime` / `useAnimation`（建议再加 `autoReuse`）；否则游戏不会进入使用流程，`use` 永远不触发。消耗品再加 `consumable = true`。
 - `use_sound`：写 `Terraria.ID.SoundID` 的字段名（如 `"Item1"` / `"Item2"`），内核会写入 `Item.UseSound`；不写则沿用原版默认。
 - 语言键：`en/de/it/fr/es/ru/zh/pt/pl/ja/ko/zh-tw`。
 - PNG 放 `Resources/Image/` 或 `Resources/lib/Image/`；解码为 RGBA32（Android 自动 Y 翻转,因为不翻转贴图就是反的！翻转是修正处理）。

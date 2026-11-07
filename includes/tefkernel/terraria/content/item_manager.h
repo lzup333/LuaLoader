@@ -75,6 +75,7 @@ typedef struct terraria_item_ops_t {
 
     /**
      * @brief 物品被真正使用时回调（每次使用一次，不是每帧）
+     * @param current 当前物品句柄
      * @param player_instance 玩家实例（hook 期间有效）
      * @param item_instance   物品实例（hook 期间有效）
      */
@@ -89,6 +90,7 @@ typedef struct terraria_item_ops_t {
     patch_handle_t(*get_texture)(terraria_item_handle_t* current);
 } terraria_item_ops_t;
 
+// 不兼容terraria_entity_handle_t
 typedef struct terraria_item_handle_t {
     const char* parent_modloader_id; //<< 所属modloader id
     const char* parent_id; //<< 所属mod id
@@ -152,6 +154,31 @@ DEFINE_FUNCTION(void, terraria_item_manager_apply_prefix_classes, void)
  * @note **不声明即不可重铸**（内核不做任何推断，尊重作者意图）
  */
 DEFINE_FUNCTION(void, terraria_item_manager_set_prefix_class, terraria_item_handle_t* item_handle, int prefix_class)
+
+/**
+ * @brief 预留一个外观饰品槽位
+ * @param slot "back"/"front"/"neck"/"face"/"handOn"/"handOff"/"waist"/"shield"
+ * @return 新槽位索引（ArmorIDs.<X> 的 Count 之后），失败 -1
+ */
+DEFINE_FUNCTION(int, terraria_item_manager_reserve_accessory_slot, const char *slot)
+
+/**
+ * @brief 设置外观饰品槽位的贴图 Asset<Texture2D>
+ */
+DEFINE_FUNCTION(bool, terraria_item_manager_set_accessory_texture,
+                const char *slot, int index, patch_handle_t asset)
+
+/** 外观槽位贴图是否已经写入 TextureAssets（未完成前不要把 Item.<slot>Slot 指过去） */
+DEFINE_FUNCTION(bool, terraria_item_manager_accessory_texture_ready,
+                const char *slot, int index)
+
+/**
+ * @brief 设置自定义翅膀的 WingStats
+ * @param index ArmorIDs.Wing 槽位
+ */
+DEFINE_FUNCTION(bool, terraria_item_manager_set_wing_stats, int index,
+                int fly_time, float fly_speed, float acceleration, bool hover,
+                float hover_speed, float hover_acceleration)
 
 #ifdef __cplusplus
 }
