@@ -450,6 +450,36 @@ static int l_patch_retain(lua_State *L) {
     return 1;
 }
 
+/// mod.patch.object_root(object) -> root | nil（仅 Android）
+/// 为托管对象建立 GC 强引用，避免长时间缓存时被 GC 回收。
+/// 返回值是 root 句柄，用 object_unroot 释放。
+static int l_patch_object_root(lua_State *L) {
+#if defined(__ANDROID__)
+    const patch_handle_t obj = to_handle(L, 1);
+    void *root = obj ? patchlib_object_root(obj) : nullptr;
+    if (root)
+        lua_pushlightuserdata(L, root);
+    else
+        lua_pushnil(L);
+#else
+    (void) L;
+    lua_pushnil(L);
+#endif
+    return 1;
+}
+
+/// mod.patch.object_unroot(root)（仅 Android）
+static int l_patch_object_unroot(lua_State *L) {
+#if defined(__ANDROID__)
+    void *root = lua_touserdata(L, 1);
+    if (root)
+        patchlib_object_unroot(root);
+#else
+    (void) L;
+#endif
+    return 0;
+}
+
 void add_patch_core(lua_State *L) {
     static const luaL_Reg fns[] = {
         {"get_type", l_patch_get_type},
@@ -471,6 +501,8 @@ void add_patch_core(lua_State *L) {
         {"string_length", l_patch_string_length},
         {"retain", l_patch_retain},
         {"copy", l_patch_retain},
+        {"object_root", l_patch_object_root},
+        {"object_unroot", l_patch_object_unroot},
         {"invoke", l_patch_invoke},
         {"free", l_patch_free},
         {nullptr, nullptr},

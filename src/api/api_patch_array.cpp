@@ -472,6 +472,30 @@ static int l_patch_get_method_by_names(lua_State *L) {
     return 1;
 }
 
+/// mod.patch.array_element_size(array) -> int（空/失败返回 0）
+static int l_patch_array_element_size(lua_State *L) {
+    const patch_handle_t a = to_handle(L, 1);
+    lua_pushinteger(L, a ? static_cast<lua_Integer>(patchlib_array_element_size(a)) : 0);
+    return 1;
+}
+
+/// mod.patch.array_element_is_reference(array) -> bool
+/// 省略 array_at 的类型参数时，可先判断元素应否按对象指针读取。
+static int l_patch_array_element_is_reference(lua_State *L) {
+    const patch_handle_t a = to_handle(L, 1);
+    lua_pushboolean(L, a && patchlib_array_element_is_reference(a));
+    return 1;
+}
+
+/// mod.patch.array_copy(dest, src, count) -> bool
+static int l_patch_array_copy(lua_State *L) {
+    const patch_handle_t dest = to_handle(L, 1);
+    const patch_handle_t src = to_handle(L, 2);
+    const size_t count = static_cast<size_t>(luaL_checkinteger(L, 3));
+    lua_pushboolean(L, dest && src && patchlib_array_copy(dest, src, count));
+    return 1;
+}
+
 void add_patch_array(lua_State *L) {
     static const luaL_Reg fns[] = {
         {"get_field_vec2", l_patch_field_get_vec2},
@@ -479,6 +503,9 @@ void add_patch_array(lua_State *L) {
         {"get_field_raw", l_patch_field_get_raw},
         {"set_field_raw", l_patch_field_set_raw},
         {"array_length", l_patch_array_length},
+        {"array_element_size", l_patch_array_element_size},
+        {"array_element_is_reference", l_patch_array_element_is_reference},
+        {"array_copy", l_patch_array_copy},
         {"array_at", l_patch_array_at},
         {"array_set", l_patch_array_set},
         {"array_fill", l_patch_array_fill},

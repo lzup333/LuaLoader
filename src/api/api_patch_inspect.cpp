@@ -285,6 +285,92 @@ static int l_patch_array_empty(lua_State *L) {
     return 1;
 }
 
+/// mod.patch.method_return_type(method) -> patch_type_t 数字
+static int l_patch_method_return_type(lua_State *L) {
+    const patch_handle_t m = to_handle(L, 1);
+    lua_pushinteger(L, m ? static_cast<lua_Integer>(patchlib_method_get_return_type(m)) : 0);
+    return 1;
+}
+
+/// mod.patch.method_signature(method) -> table | nil
+/// 返回 { is_instance, return_type, return_type_handle,
+///        args = { {type, name, type_handle}, ... } }
+/// 结构体参数/返回值可以据此判断真实类型并配合 struct_arg / invoke_value_args。
+static int l_patch_method_signature(lua_State *L) {
+    const patch_handle_t method = to_handle(L, 1);
+    if (!method) {
+        lua_pushnil(L);
+        return 1;
+    }
+    patch_method_signature_t sig;
+    if (!patchlib_method_get_signature(method, &sig)) {
+        lua_pushnil(L);
+        return 1;
+    }
+
+    lua_createtable(L, 0, 5);
+    lua_pushboolean(L, sig.is_instance);
+    lua_setfield(L, -2, "is_instance");
+    lua_pushinteger(L, static_cast<lua_Integer>(sig.return_type));
+    lua_setfield(L, -2, "return_type");
+    push_owned_handle(L, copy_handle(sig.return_type_handle));
+    lua_setfield(L, -2, "return_type_handle");
+
+    const size_t argc = tefstd_vector_size(&sig.arg_types);
+    const size_t names_n = tefstd_vector_size(&sig.arg_names);
+    const size_t handles_n = tefstd_vector_size(&sig.arg_type_handles);
+    lua_createtable(L, static_cast<int>(argc), 0);
+    for (size_t i = 0; i < argc; ++i) {
+        lua_createtable(L, 0, 3);
+        const auto type = *static_cast<patch_type_t *>(tefstd_vector_at(&sig.arg_types, i));
+        lua_pushinteger(L, static_cast<lua_Integer>(type));
+        lua_setfield(L, -2, "type");
+
+        if (i < names_n) {
+            const auto *name = static_cast<const char *const *>(tefstd_vector_at(&sig.arg_names, i));
+            if (name && *name)
+                lua_pushstring(L, *name);
+            else
+                lua_pushnil(L);
+        } else
+            lua_pushnil(L);
+        lua_setfield(L, -2, "name");
+
+        if (i < handles_n) {
+            const auto th = *static_cast<patch_handle_t *>(tefstd_vector_at(&sig.arg_type_handles, i));
+            push_owned_handle(L, copy_handle(th));
+        } else
+            lua_pushnil(L);
+        lua_setfield(L, -2, "type_handle");
+
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    lua_setfield(L, -2, "args");
+    patchlib_method_signature_free(&sig);
+    return 1;
+}
+
+/// mod.patch.type_is_same(t1, t2) -> bool
+static int l_patch_type_is_same(lua_State *L) {
+    lua_pushboolean(L, patchlib_type_is_same(to_handle(L, 1), to_handle(L, 2)));
+    return 1;
+}
+
+/// mod.patch.field_type_handle(field) -> type | nil
+/// 返回字段的原始类型句柄（可继续用于泛型/重载选择）。
+static int l_patch_field_type_handle(lua_State *L) {
+    const patch_handle_t f = to_handle(L, 1);
+    push_owned_handle(L, f ? copy_handle(patchlib_field_get_type_handle(f)) : nullptr);
+    return 1;
+}
+
+/// mod.patch.field_is_thread_static(field) -> bool
+static int l_patch_field_is_thread_static(lua_State *L) {
+    const patch_handle_t f = to_handle(L, 1);
+    lua_pushboolean(L, f && patchlib_field_is_thread_static(f));
+    return 1;
+}
+
 void add_patch_inspect(lua_State *L) {
     static const luaL_Reg fns[] = {
         {"get_full_name", l_patch_get_full_name},
@@ -302,6 +388,11 @@ void add_patch_inspect(lua_State *L) {
         {"method_token", l_patch_method_token},
         {"method_is_instance", l_patch_method_is_instance},
         {"method_is_static", l_patch_method_is_static},
+        {"method_return_type", l_patch_method_return_type},
+        {"method_signature", l_patch_method_signature},
+        {"type_is_same", l_patch_type_is_same},
+        {"field_type_handle", l_patch_field_type_handle},
+        {"field_is_thread_static", l_patch_field_is_thread_static},
         {"field_name", l_patch_field_name},
         {"field_is_const", l_patch_field_is_const},
         {"field_is_instance", l_patch_field_is_instance},

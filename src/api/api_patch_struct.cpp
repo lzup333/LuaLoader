@@ -184,6 +184,47 @@ static int l_patch_struct_arg(lua_State *L) {
     return 1;
 }
 
+/// 计算 struct_arg 第 index0 个字段（0 基）的字节偏移。
+static size_t struct_field_offset(const LuaStructArg *sa, const int index0) {
+    size_t offset = 0;
+    for (int i = 0; i < index0; ++i) {
+        size_t sz = 0, al = 1;
+        struct_field_layout(sa->field_types[i], &sz, &al);
+        offset = (offset + al - 1) & ~(al - 1);
+        offset += sz;
+    }
+    size_t sz = 0, al = 1;
+    struct_field_layout(sa->field_types[index0], &sz, &al);
+    return (offset + al - 1) & ~(al - 1);
+}
+
+/// mod.patch.struct_arg_set(arg, field_index, value)
+/// 原地修改 struct_arg 的字段，避免每帧重新创建/分配结构体。
+static int l_patch_struct_arg_set(lua_State *L) {
+    auto *sa = static_cast<LuaStructArg *>(luaL_checkudata(L, 1, STRUCT_ARG_MT));
+    const lua_Integer idx = luaL_checkinteger(L, 2);
+    if (idx < 1 || idx > sa->field_count)
+        return luaL_error(L, "bad field index");
+    const int i = static_cast<int>(idx - 1);
+    void *slot = static_cast<char *>(sa->data) + struct_field_offset(sa, i);
+    if (sa->field_types[i] == PATCH_OBJECT) {
+        // 引用字段：更新 GC 强引用，并把 Lua 值存进 uservalue 保活。
+        const patch_handle_t obj = to_handle(L, 3);
+        if (sa->roots[i]) {
+            patchlib_object_unroot(sa->roots[i]);
+            sa->roots[i] = nullptr;
+        }
+        *static_cast<patch_handle_t *>(slot) = obj;
+        if (obj)
+            sa->roots[i] = patchlib_object_root(obj);
+        lua_pushvalue(L, 3);
+        lua_setiuservalue(L, 1, i + 1);
+    } else {
+        read_patch_value(L, 3, sa->field_types[i], slot);
+    }
+    return 0;
+}
+
 /// mod.patch.invoke_value_args(method, instance, { arg... }) -> value | false
 /// 表中元素可以是：普通值（按签名编组），或 struct_arg 对象（按值结构体）
 static int l_patch_invoke_value_args(lua_State *L) {
@@ -207,10 +248,6 @@ static int l_patch_invoke_value_args(lua_State *L) {
         patchlib_method_signature_free(&sig);
         return luaL_error(L, "too many method arguments (max %d)", MAX_CALL_ARGS);
     }
-    if (sig.return_type == PATCH_STRUCT) {
-        patchlib_method_signature_free(&sig);
-        return luaL_error(L, "struct return type is not supported");
-    }
     if (argc > 0 && !lua_istable(L, arg_start)) {
         patchlib_method_signature_free(&sig);
         return luaL_error(L, "argument table expected");
@@ -226,17 +263,25 @@ static int l_patch_invoke_value_args(lua_State *L) {
         lua_rawgeti(L, arg_start, i + 1);
         if (auto *sa = static_cast<LuaStructArg *>(luaL_testudata(L, -1, STRUCT_ARG_MT))) {
             lua_pop(L, 1);
-            if (type != PATCH_STRUCT) {
+            // PATCH_STRUCT：按值传递，argv 指向结构体数据；
+            // PATCH_POINTER / PATCH_OBJECT：引用/指针参数，把数据地址放进
+            // storage，再让 argv 指向这个指针槽（对应 native 里的 &src 写法）。
+            if (type == PATCH_STRUCT) {
+                argv[i] = sa->data;
+            } else if (type == PATCH_POINTER || type == PATCH_OBJECT) {
+                *reinterpret_cast<void **>(&storage[i]) = sa->data;
+                argv[i] = &storage[i];
+            } else {
                 patchlib_method_signature_free(&sig);
-                return luaL_error(L, "argument %d is not a struct parameter", i + 1);
+                return luaL_error(L, "argument %d is not a struct/pointer parameter", i + 1);
             }
             const auto *th = static_cast<patch_handle_t *>(tefstd_vector_at(&sig.arg_type_handles, i));
             size_t expected_size = 0, expected_align = 1;
-            if (!th || !compute_struct_layout(*th, &expected_size, &expected_align) || sa->data_size != expected_size) {
-                patchlib_method_signature_free(&sig);
-                return luaL_error(L, "argument %d struct_arg size mismatch", i + 1);
+            if (th && compute_struct_layout(*th, &expected_size, &expected_align) && expected_size > 0 &&
+                sa->data_size != expected_size) {
+                LOG_WARN("[patch] struct_arg size {} != expected {} for argument {}; passing anyway", sa->data_size,
+                         expected_size, i + 1);
             }
-            argv[i] = sa->data;
         } else {
             const bool ok_val = (type != PATCH_STRUCT) && try_read_patch_value(L, -1, type, &storage[i]);
             lua_pop(L, 1);
@@ -248,20 +293,39 @@ static int l_patch_invoke_value_args(lua_State *L) {
         }
     }
 
-    uint64_t result = 0;
-    const bool ok = patchlib_method_invoke_args(method, instance, &result, argv);
+    // 返回值缓冲区：结构体返回按真实类型大小分配，其余类型 8 字节足够。
     const patch_type_t return_type = sig.return_type;
+    size_t return_size = 0;
+    if (return_type == PATCH_STRUCT && sig.return_type_handle) {
+        size_t align = 1;
+        if (compute_struct_layout(sig.return_type_handle, &return_size, &align) && return_size > 0)
+            ; // 已得到真实大小
+        else
+            return_size = 0;
+    }
+    const size_t buffer_size = return_size > 8 ? return_size : 8;
+    std::vector<unsigned char> result(buffer_size, 0);
     patchlib_method_signature_free(&sig);
-    if (!ok) {
+
+    if (!patchlib_method_invoke_args(method, instance, result.data(), argv)) {
         lua_pushboolean(L, false);
         return 1;
     }
-    push_patch_value(L, return_type, &result);
+    if (return_type == PATCH_STRUCT) {
+        // 结构体返回值以原始字节返回，调用方用 string.unpack 解出字段。
+        lua_pushlstring(L, reinterpret_cast<const char *>(result.data()), return_size ? return_size : buffer_size);
+        return 1;
+    }
+    push_patch_value(L, return_type, result.data());
     return 1;
 }
 #else
 static int l_patch_struct_arg(lua_State *L) {
     return luaL_error(L, "struct_arg 仅 Android 可用");
+}
+
+static int l_patch_struct_arg_set(lua_State *L) {
+    return luaL_error(L, "struct_arg_set 仅 Android 可用");
 }
 
 static int l_patch_invoke_value_args(lua_State *L) {
@@ -462,6 +526,7 @@ void add_patch_struct(lua_State *L) {
     static const luaL_Reg fns[] = {
         {"field_is_reference", l_patch_field_is_reference},
         {"struct_arg", l_patch_struct_arg},
+        {"struct_arg_set", l_patch_struct_arg_set},
         {"invoke_value_args", l_patch_invoke_value_args},
         {"field_pointer", l_patch_field_pointer},
         {"field_size", l_patch_field_size},

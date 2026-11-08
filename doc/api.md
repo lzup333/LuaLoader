@@ -188,7 +188,12 @@ mod.patch.set_field_value(mana, p, 999, "int32")          -- 4. 写：字段, �
 | `get_method_by_signature(type, name, {类型句柄...}, {参数名...})` | 同上 + 参数名 |
 | `make_generic_type(def, {type...})` / `make_generic_instance(m, {type...})` | 泛型实例化 |
 | `method_name/param_count/token/is_instance/is_static` | 方法信息 |
+| `method_signature(m)` / `method_return_type(m)` | 签名（含参数真实类型句柄）/ 返回类型 |
 | `field_name/is_const/is_instance/is_static` / `property_name` | 成员信息 |
+| `field_type_handle(f)` / `field_is_thread_static(f)` | 字段真实类型句柄 / 线程静态 |
+| `type_is_same(a, b)` | 两个类型句柄是否相同 |
+| `array_element_size(a)` / `array_element_is_reference(a)` / `array_copy(dst, src, n)` | 数组元素信息 / 复制 |
+| `object_root(obj)` / `object_unroot(root)` | （仅 Android）托管对象 GC 强引用 / 释放 |
 | `is_valid(handle)` / `free(handle)` | 校验 / 手动释放（一般不用） |
 
 > **嵌套类型**：`ItemID.Sets`、`PrefixLegacy.ItemSets` 在 Android 上不能直接 `get_type("Terraria.ID","ItemID.Sets")`，
@@ -287,10 +292,47 @@ mod.patch.field_size(field)
 把“逐元素跨边界”压成“一次批量读”，适用于任何平坦内存布局（Tile 快通道、内联结构体数组、
 对象指针数组等）。桌面端 `field_pointer` 返回 `nil`，退回托管路径即可保持一份脚本全平台。
 
-### 按值结构体参数（仅 Android）
+### 按值结构体 / 引用结构体参数（仅 Android）
 
 ```lua
-mod.patch.invoke_value_args(method, { mod.patch.struct_arg({"float","float"}, {x,y}), 其它参数 })
+-- 静态方法：invoke_value_args(method, { 参数... })
+-- 实例方法：invoke_value_args(method, instance, { 参数... })
+local vec = mod.patch.struct_arg({"float","float"}, {x, y})
+local ok  = mod.patch.invoke_value_args(method, {vec, 其它参数})
+```
+
+热点路径建议复用结构体，避免每帧分配：
+
+```lua
+local pos = mod.patch.struct_arg({"float","float"}, {0, 0})
+-- 每帧：
+mod.patch.struct_arg_set(pos, 1, x)
+mod.patch.struct_arg_set(pos, 2, y)
+mod.patch.invoke_value_args(draw, spriteBatch, {texture, pos, ...})
+```
+
+- `struct_arg` 支持基础标量/指针字段（`bool`、`int32`、`float`、`uint8`、`object`…）；
+  嵌套结构体请按内存布局展开成字段列表。
+- 参数是**引用/指针**（例如 `ref Rectangle`）时同样传 `struct_arg`，加载器会传递结构体地址。
+- 返回值是**结构体**时，`invoke_value_args` 返回原始字节字符串，用 `string.unpack` 解析：
+
+```lua
+local m = mod.patch.get_method(runner, "AdjustRealScreenForUI", 1)
+local raw = mod.patch.invoke_value_args(m, {mod.patch.struct_arg({"float","float"}, {x, y})})
+local nx, ny = string.unpack("<ff", raw)
+```
+
+- `method_signature(m)` 可查 `return_type_handle` / 每个参数的 `type_handle`，
+  用来确定结构体大小与字段类型。
+
+### 托管对象保活（仅 Android）
+
+Android 的对象句柄是裸指针，长时间缓存（纹理、图标等）需要显式 GC 强引用：
+
+```lua
+local root = mod.patch.object_root(texture)   -- 建立强引用
+-- ... 跨帧使用 texture ...
+mod.patch.object_unroot(root)                  -- 不再使用时释放
 ```
 
 ### Hook
