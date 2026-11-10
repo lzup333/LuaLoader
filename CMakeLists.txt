@@ -52,6 +52,8 @@ set(LUALOADER_SOURCES
 
 if(ANDROID)
     list(APPEND LUALOADER_SOURCES src/controls.cpp)
+else()
+    list(APPEND LUALOADER_SOURCES src/keybind.cpp)
 endif()
 
 add_library(LuaLoader SHARED ${LUALOADER_SOURCES})

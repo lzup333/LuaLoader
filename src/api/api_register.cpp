@@ -1,5 +1,7 @@
 #if defined(__ANDROID__)
 #include "controls.hpp"
+#else
+#include "keybind.hpp"
 #endif
 #include "api_internal.hpp"
 
@@ -31,7 +33,7 @@ static int l_panic(lua_State *L) {
 ///     patch = { ... },
 ///     item / projectile / buff / npc / net / recipe = { ... },
 ///     gui = { ... }（启用 GUI 时）,
-///     controls = { ... }（Android）
+///     controls = { ... }（Android 触摸按钮 / PC 原生键盘键位）
 ///   }
 ///
 /// 必须在执行入口脚本之前调用。
@@ -134,6 +136,8 @@ void register_api(lua_State *L, lua_mod_handle_t *handle) {
 
 #if defined(__ANDROID__)
     controls::register_api(L, handle);
+#else
+    keybind::register_api(L, handle);
 #endif
     // 最后把完整 mod 表设为全局，并弹掉栈顶副本。
     lua_pushvalue(L, -1);

@@ -64,6 +64,7 @@ todo_list = { "setup" }   -- 启动时按顺序执行这些函数
 | 自定义物品 | `mod.item.register{...}` | 贴图 + 本地化 + 合成表 |
 | 自定义弹幕 | `mod.projectile.register{...}` | 贴图 + AI + 帧图 |
 | 自定义 Buff | `mod.buff.register{...}` | 图标 + 本地化 + 每帧回调 |
+| 原生按键 | `mod.controls.register{...}` | PC 注入游戏按键菜单；Android 原生触摸按钮 |
 | 联机同步 | `mod.net.*` | 服务端权威 RPC |
 
 用法都在 [`doc/api.md`](doc/api.md)，一个完整示例（每帧补满魔力）：

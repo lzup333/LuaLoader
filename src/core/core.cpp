@@ -1,5 +1,7 @@
 #if defined(__ANDROID__)
 #include "controls.hpp"
+#else
+#include "keybind.hpp"
 #endif
 /*******************************************************************************
  * LuaLoader - core
@@ -258,7 +260,7 @@ static void on_mod_message(const char *mod_id, const char *channel, const uint8_
 
 /// 加载器初始化（内核启动时调用；幂等，重复调用直接忽略）。
 ///
-/// 负责：日志、联机消息回调、Android 原生按键、GUI 渲染钩子。
+/// 负责：日志、联机消息回调、原生按键（Android 触摸 / PC 键盘）、GUI 渲染钩子。
 /// 注意：服务端没有 GraphicsDevice/spriteBatch，必须跳过 GUI 安装。
 ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     LOG_INFO("Initializing LuaLoader...");
@@ -280,6 +282,8 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     if (ml_entry && ml_entry->private_dir)
         controls::configure_storage(ml_entry->private_dir);
     controls::install();
+#else
+    keybind::install();
 #endif
     // 读取加载器隐藏配置（<private_dir>/config.json），按需开启调试工具
     if (ml_entry && ml_entry->private_dir) {
@@ -322,6 +326,10 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
     lua_mod_handles.clear();
 
     lua_api::shutdown_global_hooks();
+
+#if !defined(__ANDROID__)
+    keybind::shutdown();
+#endif
 
     for (auto &entry : lua_mod_multiplayer_infos) {
         free(const_cast<char *>(entry.second->mod_id));

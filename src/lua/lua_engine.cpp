@@ -1,5 +1,7 @@
 #if defined(__ANDROID__)
 #include "controls.hpp"
+#else
+#include "keybind.hpp"
 #endif
 /*******************************************************************************
  * LuaLoader - lua engine
@@ -579,6 +581,8 @@ void close(lua_mod_handle_t *handle) {
     if (handle->L) {
 #if defined(__ANDROID__)
         controls::unregister_owner(handle);
+#else
+        keybind::unregister_owner(handle);
 #endif
         lua_close(handle->L);
         handle->L = nullptr;

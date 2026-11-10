@@ -582,7 +582,56 @@ mod.recipe.add{
 - 一条配方只写一个产物；要多个产物就调多次 `add`。
 - `materials` 至少一项；材料数量上限与游戏一致（通常 15 种）。
 
-## `mod.net`：联机同步（服务端权威）
+## `mod.controls`：原生按键绑定
+
+同一个接口在两端映射到不同实现：
+
+- **PC（Windows / Linux / macOS）**：注册进游戏原生「设置 -> 控制」菜单，玩家可直接改键。
+- **Android（PE）**：注册原生触摸按钮（需要 `icon` / `show_label`）。
+
+```lua
+local ok, err = mod.controls.available()
+
+mod.controls.register {
+    id = "chat_test",             -- 1-64 个 ASCII 字母/数字/_.-，Mod 内唯一
+    name = "按键测试（F6）",       -- PC：菜单显示名 + 唯一 trigger；Android：按钮文字
+    key = "F6",                   -- PC 默认键（可省略 = 未绑定）；Android 忽略
+    on_press = function(id) end,  -- 可选，按下时回调
+    on_release = function(id) end,-- 可选，松开时回调
+    enabled = true,               -- 可选，默认 true
+}
+
+if mod.controls.down("chat_test") then end      -- 是否按住
+if mod.controls.pressed("chat_test") then end   -- 本帧刚按下
+if mod.controls.released("chat_test") then end  -- 本帧刚松开
+
+mod.controls.set_enabled("chat_test", false)
+mod.controls.set_visible("chat_test", true)     -- PC 为兼容空操作
+mod.controls.unregister("chat_test")
+```
+
+| 字段 / 方法 | PC | Android |
+|---|---|---|
+| `id` | Mod 内唯一标识 | 同左 |
+| `name` | **全局唯一** trigger + 菜单显示名 | 按钮文字 |
+| `key` / `default_key` | 默认键名，如 `"F6"`、`"K"`、`"LeftShift"` | 忽略 |
+| `on_press` / `on_release` | `Main.Update` 后置回调，参数为 `id` | 按钮按下 / 松开 |
+| `down/pressed/released` | 读取游戏 `PlayerInput.Triggers` | 读取按钮状态 |
+| `set_enabled` | 禁用后不触发回调 | 同左 |
+| `set_visible` | 空操作 | 显示 / 隐藏按钮 |
+| `icon` / `show_label` | 忽略 | PNG 图标 / 是否显示文字 |
+
+注意事项：
+
+- PC 端 `name` 会写入 `PlayerInput.KnownTriggers` 和 `KeyStatus`，必须全局唯一；建议带 Mod 名前缀。
+- 改键后 Mod 不需要重新注册：`on_press` / `down` 读取的是游戏当前绑定。
+- 聊天输入或 GUI 文本框激活时，PC 端会自动抑制回调，避免打字误触。
+- 回调在游戏主线程执行；不要在回调里做阻塞操作。
+- 需要桌面内核包含 `keybind_manager`（`terraria_keybind_manager_*` 符号）。
+
+一个完整的可运行示例见
+[`examples/keybind_demo`](../examples/keybind_demo)：按下 F6 后通过 `Main.NewText` 在聊天栏输出。
+
 
 ```lua
 mod.net.mode()                          -- 0 单机 / 1 客户端 / 2 专用服 / 3 开房
