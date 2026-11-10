@@ -32,3 +32,5 @@ libtefkernel.*.so
 *__pycache__*
 
 *testmods*
+
+.idea
