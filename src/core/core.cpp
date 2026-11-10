@@ -318,6 +318,12 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
     gui::shutdown();
 #endif
 
+#if !defined(__ANDROID__)
+    /* 必须在关闭 Mod 之前调用：内核 shutdown 会把当前键位写盘，
+     * 先 unregister 会让注册项为空，保存出空配置。 */
+    keybind::shutdown();
+#endif
+
     for (auto &entry : lua_mod_handles) {
         lua_engine::call_cleanup(entry.second);
         lua_engine::close(entry.second);
@@ -326,10 +332,6 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
     lua_mod_handles.clear();
 
     lua_api::shutdown_global_hooks();
-
-#if !defined(__ANDROID__)
-    keybind::shutdown();
-#endif
 
     for (auto &entry : lua_mod_multiplayer_infos) {
         free(const_cast<char *>(entry.second->mod_id));

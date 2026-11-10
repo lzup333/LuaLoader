@@ -625,6 +625,7 @@ mod.controls.unregister("chat_test")
 
 - PC 端 `name` 会写入 `PlayerInput.KnownTriggers` 和 `KeyStatus`，必须全局唯一；建议带 Mod 名前缀。
 - 改键后 Mod 不需要重新注册：`on_press` / `down` 读取的是游戏当前绑定。
+- PC 端改键会自动持久化到 `<tefkernel_working_dir>/tefkernel.keybinds.tef`，下次启动恢复。
 - 聊天输入或 GUI 文本框激活时，PC 端会自动抑制回调，避免打字误触。
 - 回调在游戏主线程执行；不要在回调里做阻塞操作。
 - 需要桌面内核包含 `keybind_manager`（`terraria_keybind_manager_*` 符号）。

@@ -301,16 +301,14 @@ void install() {
 }
 
 void shutdown() {
-    for (auto &binding : g_bindings) {
-        if (linked()) {
-            auto scope = terraria_keybind_scope_t{loader_id, binding->mod_id.c_str()};
-            terraria_keybind_manager_unregister(&scope, binding->id.c_str());
-        }
-        release_binding(binding.get());
-    }
-    g_bindings.clear();
+    /* 先让内核把当前绑定写盘（此时注册项还完整），再释放 Lua 引用。
+     * 不要先 unregister：那会把条目清空，导致保存出空文件。 */
     if (linked())
         terraria_keybind_manager_shutdown();
+
+    for (auto &binding : g_bindings)
+        release_binding(binding.get());
+    g_bindings.clear();
 }
 
 void unregister_owner(lua_mod_handle_t *h) {
