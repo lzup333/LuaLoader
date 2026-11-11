@@ -619,10 +619,14 @@ mod.controls.unregister("chat_test")
 | `down/pressed/released` | 读取游戏 `PlayerInput.Triggers` | 读取按钮状态 |
 | `set_enabled` | 禁用后不触发回调 | 同左 |
 | `set_visible` | 空操作 | 显示 / 隐藏按钮 |
-| `icon` / `show_label` | 忽略 | PNG 图标 / 是否显示文字 |
+| `icon` / `show_label` | 忽略 | PNG 图标（放 `Image/` 下，旧路径仍兼容）/ 是否显示文字 |
 
 注意事项：
 
+- Android 图标路径：`icon` 写相对路径（如 `icon = "attack.png"`），统一放 `Image/` 下；查找顺序为
+  `<private>/lib/Image/` → `<private>/lib/` → `<private>/Image/` → `<private>/Resources/Image/` → `<private>/`。
+  也就是**新 Mod 请把 PNG 放进 `Image/`，老 Mod 原来放的位置（Mod 根目录等）不用改动也能继续用**。
+  绝对路径和 `..` 一律拒绝，解析后还会校验最终文件仍在 Mod 目录内。
 - PC 端 `name` 会写入 `PlayerInput.KnownTriggers` 和 `KeyStatus`，必须全局唯一；建议带 Mod 名前缀。
 - 改键后 Mod 不需要重新注册：`on_press` / `down` 读取的是游戏当前绑定。
 - PC 端改键会自动持久化到 `<tefkernel_working_dir>/tefkernel.keybinds.tef`，下次启动恢复。

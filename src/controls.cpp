@@ -8,6 +8,7 @@
  */
 
 #include "controls.hpp"
+#include "api/api_internal.hpp"
 #include "logger.hpp"
 #include "tefkernel/terraria/content/button_manager.h"
 
@@ -59,10 +60,64 @@ int available(lua_State *L) {
     return 2;
 }
 
+/// 解析按键图标路径。
+///
+/// 新约定：图标统一放 `<mod>/Image/` 下（与物品/弹幕贴图同一套查找顺序）；
+/// 老 Mod 原来放的位置仍然兼容（Mod 根目录、`Resources/Image`、`lib/Image` 等）。
+/// 无论命中哪一个，都会 canonical 化并确认最终文件仍在 Mod 目录内，防止
+/// 绝对路径或符号链接读到 Mod 目录之外。失败时通过 error 返回可直接展示的原因。
+static bool resolve_icon_path(const lua_mod_handle_t *h, const std::string &icon,
+                              std::filesystem::path &path, const char **error) {
+    const std::filesystem::path relative(icon);
+    if (relative.is_absolute()) {
+        *error = "control icon must be relative to the mod directory";
+        return false;
+    }
+    for (const auto &part : relative) {
+        if (part == "..") {
+            *error = "control icon path escapes mod directory";
+            return false;
+        }
+    }
+
+    // 统一走贴图解析：<Image>/ 优先，其次旧位置。
+    const std::string resolved =
+        lua_api::resolve_item_image(h->private_dir, h->mod_dir, icon);
+    std::error_code ec;
+    if (resolved.empty() || !std::filesystem::is_regular_file(resolved, ec)) {
+        *error = "control icon not found (put it under Image/)";
+        return false;
+    }
+    path = std::filesystem::canonical(resolved, ec);
+    if (ec) {
+        *error = "control icon file unavailable";
+        return false;
+    }
+
+    const auto inside = [](const std::filesystem::path &root,
+                           const std::filesystem::path &candidate) {
+        if (root.empty()) return false;
+        const auto child = candidate.lexically_relative(root);
+        return !child.empty() && *child.begin() != "..";
+    };
+    std::error_code root_ec;
+    if (!h->private_dir.empty()) {
+        const auto root = std::filesystem::canonical(h->private_dir, root_ec);
+        if (!root_ec && inside(root, path)) return true;
+    }
+    if (!h->mod_dir.empty()) {
+        const auto root = std::filesystem::canonical(h->mod_dir, root_ec);
+        if (!root_ec && inside(root, path)) return true;
+    }
+    *error = "control icon path escapes mod directory";
+    return false;
+}
+
 /// mod.controls.register{ id=..., name=..., icon=..., show_label=... } -> id
 ///
-/// icon 是相对 mod.private_dir 的 PNG 路径；会做 canonical + 越界检查，
-/// 防止通过绝对路径或 .. 读到 Mod 私有目录之外的文件。
+/// icon 是 PNG 相对路径：优先在 `<mod>/Image/` 下查找（新约定），
+/// 找不到时自动回退到旧位置（Mod 根目录 / Resources/Image 等），
+/// 并且始终做 canonical + 越界检查。
 int add(lua_State *L) {
     if (!linked() || !terraria_button_manager_available())
         return luaL_error(L, "native touch bindings unavailable: %s", error());
@@ -108,34 +163,20 @@ int add(lua_State *L) {
 
     auto *h = owner(L);
 
-    // 解码图标：确保路径始终落在 mod.private_dir 内（含符号链接解析）。
+    // 解码图标：`<mod>/Image/` 优先，旧位置自动回退，最终仍在 Mod 目录内。
     std::vector<unsigned char> pixels;
     terraria_button_image_t image{};
     if (!icon_path.empty()) {
-        std::error_code ec;
-        auto root = std::filesystem::canonical(h->private_dir, ec);
-        if (ec)
-            return luaL_error(L, "control icon directory unavailable");
-
-        auto relative = std::filesystem::path(icon_path);
-        if (relative.is_absolute())
-            return luaL_error(L, "control icon must be relative to the mod directory");
-        for (const auto &part : relative)
-            if (part == "..")
-                return luaL_error(L, "control icon path escapes mod directory");
-
-        auto path = std::filesystem::canonical(root / relative, ec);
-        if (ec)
-            return luaL_error(L, "control icon file unavailable");
-        // 符号链接可能指向 root 之外，再检查一次相对位置。
-        auto child = path.lexically_relative(root);
-        if (child.empty() || *child.begin() == "..")
-            return luaL_error(L, "control icon path escapes mod directory");
+        std::filesystem::path path;
+        const char *icon_error = "control icon file unavailable";
+        if (!resolve_icon_path(h, icon_path, path, &icon_error))
+            return luaL_error(L, "%s", icon_error);
 
         if (!image::decode_png_file(path.string(), pixels, image.width, image.height))
             return luaL_error(L, "control icon PNG decode failed");
         if (image.width < 1 || image.height < 1 || image.width > 2048 || image.height > 2048)
             return luaL_error(L, "control icon dimensions must be 1-2048");
+        LOG_INFO("[controls] {} icon -> {}", id, path.string());
         image.rgba = pixels.data();
         image.size = pixels.size();
     }
