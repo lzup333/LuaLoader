@@ -6,6 +6,20 @@
 // 坐标均为窗口内相对坐标；越界/非有限数会被拒绝。
 // ====================================================================
 
+/// 当前 mod.gui.* 调用所属的 Mod。
+///
+/// register_api 会把 Mod 句柄作为 upvalue 注入每个函数，因此窗口控制
+/// （hide/show/set_visible/set_pos/...）在 on_gui 之外（setup、按键回调、
+/// 定时器等）调用同样有效；拿不到 upvalue 时退回旧的 on_gui 上下文。
+lua_mod_handle_t *gui_owner(lua_State *L) {
+    return static_cast<lua_mod_handle_t *>(lua_touserdata(L, lua_upvalueindex(1)));
+}
+
+const std::string &gui_mod_id(lua_State *L) {
+    lua_mod_handle_t *h = gui_owner(L);
+    return h ? h->mod_id : g_current_mod;
+}
+
 /// 开始一个可滚动视口（最多嵌套 8 层）。
 /// 参数：id, x, y, w, h, content_w, content_h
 int l_gui_begin_scroll(lua_State *L) {
@@ -16,7 +30,7 @@ int l_gui_begin_scroll(lua_State *L) {
     if (!g_ctx || g_scroll_stack.size() >= 8 || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) ||
         !std::isfinite(h) || !std::isfinite(cw) || !std::isfinite(ch) || w <= 0 || h <= 0 || cw < 0 || ch < 0)
         return luaL_error(L, "invalid scroll viewport");
-    const std::string key = g_current_mod + "#" + id;
+    const std::string key = gui_mod_id(L) + "#" + id;
     if (!g_scrolls.count(key) && g_scrolls.size() >= 4096)
         return luaL_error(L, "scroll ID limit exceeded");
     auto &m = g_scrolls[key];
@@ -139,7 +153,7 @@ int l_gui_scroll_to(lua_State *L) {
     float x = luaL_checknumber(L, 2), y = luaL_checknumber(L, 3);
     if (!std::isfinite(x) || !std::isfinite(y))
         return luaL_error(L, "invalid scroll offset");
-    const std::string key = g_current_mod + "#" + id;
+    const std::string key = gui_mod_id(L) + "#" + id;
     if (!g_scrolls.count(key) && g_scrolls.size() >= 4096)
         return luaL_error(L, "scroll ID limit exceeded");
     auto &m = g_scrolls[key];
@@ -320,7 +334,7 @@ int l_gui_slider(lua_State *L) {
     const float track_h = 10.0f * g_scale;
     const float track_y = y + (h - track_h) * 0.5f;
 
-    const std::string id = g_current_mod + "#" + label;
+    const std::string id = gui_mod_id(L) + "#" + label;
     const bool hovered = mouse_in(track_x, y, track_w, h);
     if (hovered || g_slider_active == id)
         g_hover_gui = true;
@@ -388,7 +402,7 @@ int l_gui_collapsing_header(lua_State *L) {
         lua_pushboolean(L, 0);
         return 1;
     }
-    const std::string id = g_current_mod + "#" + label;
+    const std::string id = gui_mod_id(L) + "#" + label;
     bool open = g_headers[id];
     float x, y;
     const float w = g_ctx->cw;
@@ -418,7 +432,7 @@ int l_gui_input_text(lua_State *L) {
         lua_pushstring(L, value);
         return 1;
     }
-    const std::string id = g_current_mod + "#" + label;
+    const std::string id = gui_mod_id(L) + "#" + label;
     const bool editing = g_edit.active && g_edit.owner == id;
 
     float x, y;
@@ -453,10 +467,28 @@ int l_gui_input_text(lua_State *L) {
 // --------------------------------------------------------------------
 // 窗口定位 / 显示控制：允许 Mod 指定绘制位置、控制出现与消失
 // --------------------------------------------------------------------
-WindowState *current_window() {
-    if (g_current_mod.empty())
+WindowState *current_window(lua_State *L) {
+    const std::string &id = gui_mod_id(L);
+    if (id.empty())
         return nullptr;
-    return &g_windows[g_current_mod];
+    return &g_windows[id];
+}
+
+/// 隐藏窗口时一并结束它正在进行的文本编辑/拖动，
+/// 避免窗口完全消失后仍残留软键盘或拖拽状态。
+void apply_window_visible(WindowState *ws, const std::string &id, const bool visible) {
+    if (!ws)
+        return;
+    ws->visible = visible;
+    if (visible)
+        return;
+    if (g_edit.active && g_edit.owner.rfind(id + "#", 0) == 0) {
+        g_edit = EditState{};
+        ime::close();
+        kbd::reset();
+    }
+    if (g_drag_id == id)
+        g_drag_id.clear();
 }
 
 /// mod.gui.set_pos(x, y)  —— 设置窗口左上角（屏幕像素）
@@ -464,10 +496,10 @@ WindowState *current_window() {
 int l_gui_set_pos(lua_State *L) {
     const float x = static_cast<float>(luaL_checknumber(L, 1));
     const float y = static_cast<float>(luaL_checknumber(L, 2));
-    if (WindowState *ws = current_window()) {
+    if (WindowState *ws = current_window(L)) {
         if (!std::isfinite(x) || !std::isfinite(y))
             return luaL_error(L, "invalid window position");
-        auto saved = g_saved_positions.find(g_current_mod);
+        auto saved = g_saved_positions.find(gui_mod_id(L));
         if (ws->initial_position && saved != g_saved_positions.end()) {
             ws->x = saved->second.first;
             ws->y = saved->second.second;
@@ -482,7 +514,7 @@ int l_gui_set_pos(lua_State *L) {
 /// mod.gui.get_pos() -> x, y
 /// mod.gui.get_pos() -> x, y
 int l_gui_get_pos(lua_State *L) {
-    WindowState *ws = current_window();
+    WindowState *ws = current_window(L);
     lua_pushnumber(L, ws ? ws->x : 0.0);
     lua_pushnumber(L, ws ? ws->y : 0.0);
     return 2;
@@ -492,7 +524,7 @@ int l_gui_get_pos(lua_State *L) {
 /// mod.gui.set_width(w)
 int l_gui_set_width(lua_State *L) {
     const float w = static_cast<float>(luaL_checknumber(L, 1));
-    if (WindowState *ws = current_window()) {
+    if (WindowState *ws = current_window(L)) {
         if (w > 60.0f)
             ws->w = w;
     }
@@ -518,8 +550,8 @@ int l_gui_set_cursor(lua_State *L) {
 /// mod.gui.set_visible(bool)
 int l_gui_set_visible(lua_State *L) {
     const bool v = lua_toboolean(L, 1) != 0;
-    if (WindowState *ws = current_window())
-        ws->visible = v;
+    const std::string &id = gui_mod_id(L);
+    apply_window_visible(current_window(L), id, v);
     lua_pushboolean(L, v);
     return 1;
 }
@@ -527,28 +559,28 @@ int l_gui_set_visible(lua_State *L) {
 /// mod.gui.is_visible() -> bool
 /// mod.gui.is_visible() -> bool
 int l_gui_is_visible(lua_State *L) {
-    WindowState *ws = current_window();
+    WindowState *ws = current_window(L);
     lua_pushboolean(L, ws && ws->visible);
     return 1;
 }
 
 /// mod.gui.show()
-int l_gui_show(lua_State *) {
-    if (WindowState *ws = current_window())
-        ws->visible = true;
+int l_gui_show(lua_State *L) {
+    apply_window_visible(current_window(L), gui_mod_id(L), true);
     return 0;
 }
 
-int l_gui_hide(lua_State *) {
-    if (WindowState *ws = current_window())
-        ws->visible = false;
+/// mod.gui.hide() —— 完全隐藏窗口：不再绘制窗口、收起图标和文件夹入口，
+/// 也不响应输入（仍会回调 on_gui，方便 Mod 用 show() 恢复）。
+int l_gui_hide(lua_State *L) {
+    apply_window_visible(current_window(L), gui_mod_id(L), false);
     return 0;
 }
 
 /// mod.gui.set_collapsed(v) -> v
 int l_gui_set_collapsed(lua_State *L) {
     const bool v = lua_toboolean(L, 1) != 0;
-    if (WindowState *ws = current_window())
+    if (WindowState *ws = current_window(L))
         ws->collapsed = v;
     lua_pushboolean(L, v);
     return 1;
@@ -556,14 +588,14 @@ int l_gui_set_collapsed(lua_State *L) {
 
 /// mod.gui.is_collapsed() -> bool
 int l_gui_is_collapsed(lua_State *L) {
-    WindowState *ws = current_window();
+    WindowState *ws = current_window(L);
     lua_pushboolean(L, ws && ws->collapsed);
     return 1;
 }
 
 /// mod.gui.toggle_collapsed() —— 收起/展开
-int l_gui_toggle_collapsed(lua_State *) {
-    if (WindowState *ws = current_window())
+int l_gui_toggle_collapsed(lua_State *L) {
+    if (WindowState *ws = current_window(L))
         ws->collapsed = !ws->collapsed;
     return 0;
 }
@@ -592,7 +624,7 @@ Color lua_color(lua_State *L, int index) {
 
 int l_gui_set_style(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
-    WindowState *ws = current_window();
+    WindowState *ws = current_window(L);
     if (!ws)
         return 0;
     const char *keys[] = {"panel", "title", "button", "hover", "active", "border", "text"};
@@ -653,17 +685,19 @@ int l_gui_set_content_height(lua_State *L) {
     return 0;
 }
 
-bool image_owned(const char *id) {
-    return std::string(id).rfind(g_current_mod + "#", 0) == 0;
+bool image_owned(lua_State *L, const char *id) {
+    const std::string &owner = gui_mod_id(L);
+    return !owner.empty() && std::string(id).rfind(owner + "#", 0) == 0;
 }
 
 int l_gui_load_image(lua_State *L) {
     const char *path = luaL_checkstring(L, 1);
+    const std::string &mod_id = gui_mod_id(L);
     std::string root;
     for (auto &kv : core::lua_mod_handles)
-        if (kv.second && kv.second->mod_id == g_current_mod)
+        if (kv.second && kv.second->mod_id == mod_id)
             root = kv.second->private_dir;
-    const auto id = root.empty() ? std::string() : images::request(g_current_mod, root, path);
+    const auto id = root.empty() ? std::string() : images::request(mod_id, root, path);
     if (id.empty())
         lua_pushnil(L);
     else
@@ -673,7 +707,7 @@ int l_gui_load_image(lua_State *L) {
 
 int l_gui_release_image(lua_State *L) {
     const char *id = luaL_checkstring(L, 1);
-    if (image_owned(id))
+    if (image_owned(L, id))
         g_image_release_queue.push_back(id);
     return 0;
 }
@@ -681,7 +715,7 @@ int l_gui_release_image(lua_State *L) {
 int l_gui_image_status(lua_State *L) {
     const char *id = luaL_checkstring(L, 1);
     int w = 0, h = 0;
-    const auto state = image_owned(id) ? images::status(id, w, h) : "invalid";
+    const auto state = image_owned(L, id) ? images::status(id, w, h) : "invalid";
     lua_pushlstring(L, state.data(), state.size());
     lua_pushinteger(L, w);
     lua_pushinteger(L, h);
@@ -702,7 +736,7 @@ int l_gui_image(lua_State *L) {
             lua_pop(L, 1);
         }
     }
-    if (g_ctx && image_owned(id))
+    if (g_ctx && image_owned(L, id))
         draw_image(id, g_ctx->ox + x, g_ctx->oy + y, w, h, c, src[0], src[1], src[2], src[3]);
     return 0;
 }
@@ -714,7 +748,7 @@ int l_gui_image_fit(lua_State *L) {
     const char *mode = luaL_optstring(L, 6, "contain");
     Color c = lua_isnoneornil(L, 7) ? kWhite : lua_color(L, 7);
     const int fit = std::strcmp(mode, "cover") == 0 ? -2 : -1;
-    if (g_ctx && image_owned(id))
+    if (g_ctx && image_owned(L, id))
         draw_image(id, g_ctx->ox + x, g_ctx->oy + y, w, h, c, 0, 0, 0, 0, fit);
     return 0;
 }
@@ -726,7 +760,7 @@ int l_gui_nine_slice(lua_State *L) {
     int border = luaL_checkinteger(L, 6);
     Color c = lua_isnoneornil(L, 7) ? kWhite : lua_color(L, 7);
     float edge = luaL_optnumber(L, 8, 0);
-    if (g_ctx && image_owned(id) && border > 0)
+    if (g_ctx && image_owned(L, id) && border > 0)
         draw_image(id, g_ctx->ox + x, g_ctx->oy + y, w, h, c, 0, 0, 0, 0, border, edge);
     return 0;
 }
@@ -737,7 +771,7 @@ int l_gui_image_button(lua_State *L) {
           h = luaL_checknumber(L, 5);
     const char *label = luaL_optstring(L, 6, "");
     int border = luaL_optinteger(L, 7, 0);
-    if (!g_ctx || !image_owned(id) || w <= 0 || h <= 0) {
+    if (!g_ctx || !image_owned(L, id) || w <= 0 || h <= 0) {
         lua_pushboolean(L, false);
         return 1;
     }
@@ -765,8 +799,8 @@ int l_gui_set_skin(lua_State *L) {
     const int border = luaL_checkinteger(L, 2);
     float size = luaL_optnumber(L, 4, 48);
     float edge = luaL_optnumber(L, 5, 0);
-    if (WindowState *ws = current_window()) {
-        if (image_owned(panel) && image_owned(icon) && border > 0 && size >= 24 && size <= 128) {
+    if (WindowState *ws = current_window(L)) {
+        if (image_owned(L, panel) && image_owned(L, icon) && border > 0 && size >= 24 && size <= 128) {
             ws->skin_panel = panel;
             ws->skin_icon = icon;
             ws->skin_border = border;
@@ -781,7 +815,7 @@ int l_gui_set_skin(lua_State *L) {
 int l_gui_set_title(lua_State *L) {
     const char *title = luaL_checkstring(L, 1);
     const char *icon = luaL_optstring(L, 2, "");
-    if (WindowState *ws = current_window()) {
+    if (WindowState *ws = current_window(L)) {
         ws->title = title;
         ws->compact_label = icon;
     }

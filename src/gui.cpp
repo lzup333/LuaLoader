@@ -227,10 +227,16 @@ void shutdown() {
     g_installed = false;
 }
 
-void register_api(lua_State *L, lua_mod_handle_t *) {
-    // 在 mod 表（栈顶）上挂 mod.gui
+void register_api(lua_State *L, lua_mod_handle_t *handle) {
+    // 在 mod 表（栈顶）上挂 mod.gui。
+    // 每个函数都带 Mod 句柄 upvalue：窗口控制（hide/show/set_visible/...）
+    // 在 on_gui 之外调用也能定位到自己的窗口。
     lua_newtable(L);
-    luaL_setfuncs(L, gui_funcs, 0);
+    for (const luaL_Reg *fn = gui_funcs; fn->name; ++fn) {
+        lua_pushlightuserdata(L, handle);
+        lua_pushcclosure(L, fn->func, 1);
+        lua_setfield(L, -2, fn->name);
+    }
     lua_pushinteger(L, 2);
     lua_setfield(L, -2, "image_api_version");
     lua_setfield(L, -2, "gui");

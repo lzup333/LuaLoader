@@ -24,14 +24,28 @@ end
 |---|---|
 | `set_pos(x, y)` / `get_pos()` | 窗口位置（屏幕像素） |
 | `set_width(w)` | 宽度（高度随内容自适应） |
-| `set_visible(v)` / `is_visible()` / `show()` / `hide()` | 显隐 |
-| `set_collapsed(v)` / `is_collapsed()` / `toggle_collapsed()` | 收起/展开 |
+| `set_visible(v)` / `is_visible()` / `show()` / `hide()` | 完全显隐（连收起图标也一起消失） |
+| `set_collapsed(v)` / `is_collapsed()` / `toggle_collapsed()` | 收起为小图标 / 展开 |
 | `set_title(title, icon?)` | 标题与收起入口文字（`icon` 建议一个字） |
 | `set_cursor(x, y)` | 移动布局光标（相对内容区左上角） |
 | `set_content_height(h)` | 自定义布局时声明内容高度 |
 
 隐藏时仍会回调 `on_gui`（可在里面 `show()` 重新显示），但控件不绘制、不响应输入。
 位置只需首次设置，否则每帧重设会阻止拖动。
+
+> **完全隐藏**：`mod.gui.hide()` 会让窗口、收起图标和文件夹入口一起消失。
+> 它在 `on_gui` 之外（`setup`、按键回调、定时器等）调用同样有效；需要恢复时调用
+> `mod.gui.show()`。`set_collapsed(true)` 只是收起成小图标，和完全隐藏不同。
+
+```lua
+function toggle_ui()
+    if mod.gui.is_visible() then
+        mod.gui.hide()   -- 完全隐藏（任何上下文都可调用）
+    else
+        mod.gui.show()   -- 恢复窗口
+    end
+end
+```
 
 ## 控件
 
