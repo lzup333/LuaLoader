@@ -10,10 +10,15 @@
 #include "controls.hpp"
 #include "api/api_internal.hpp"
 #include "logger.hpp"
+#include "patchlib/method.h"
+#include "patchlib/type.h"
 #include "tefkernel/terraria/content/button_manager.h"
 
 #include <cstring>
 #include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "image_decode.hpp"
 
@@ -28,6 +33,9 @@ namespace {
 /// 按钮作用域的加载器标识；内核用 (loader_id, mod_id) 区分不同 Mod。
 constexpr const char *loader_id = "lzup333.lualoader";
 
+/// 内核是否导出了完整的 button_manager API（定义见下，回调派发要先用到）。
+bool linked();
+
 /// 当前 Mod 的按钮作用域。
 terraria_button_scope_t scope_of(lua_mod_handle_t *h) {
     return {loader_id, h->mod_id.c_str()};
@@ -36,6 +44,103 @@ terraria_button_scope_t scope_of(lua_mod_handle_t *h) {
 /// 从闭包 upvalue 取回 Mod 句柄（register_api 时绑定）。
 lua_mod_handle_t *owner(lua_State *L) {
     return static_cast<lua_mod_handle_t *>(lua_touserdata(L, lua_upvalueindex(1)));
+}
+
+/// 一个已注册按钮的回调记录。
+///
+/// Android 内核只维护按住/按下/松开状态，不派发回调，所以 on_press/on_release
+/// 由加载器在 Main.Update 之后每帧轮询内核并调用（与 PC 端语义一致）。
+struct ControlCallback {
+    lua_mod_handle_t *handle{nullptr};
+    lua_State *L{nullptr};
+    std::string mod_id;
+    std::string id;
+    int on_press_ref{LUA_NOREF};
+    int on_release_ref{LUA_NOREF};
+};
+
+std::vector<std::unique_ptr<ControlCallback>> g_callbacks;
+patch_hook_id_t g_tick_hook = PATCH_HOOK_INVALID_ID;
+
+ControlCallback *find_callback(lua_mod_handle_t *h, const char *id) {
+    if (!h || !id) return nullptr;
+    for (auto &entry : g_callbacks) {
+        if (entry->handle == h && entry->id == id) return entry.get();
+    }
+    return nullptr;
+}
+
+void release_callback(ControlCallback *cb) {
+    if (!cb) return;
+    if (cb->L) {
+        if (cb->on_press_ref != LUA_NOREF)
+            luaL_unref(cb->L, LUA_REGISTRYINDEX, cb->on_press_ref);
+        if (cb->on_release_ref != LUA_NOREF)
+            luaL_unref(cb->L, LUA_REGISTRYINDEX, cb->on_release_ref);
+    }
+    cb->on_press_ref = LUA_NOREF;
+    cb->on_release_ref = LUA_NOREF;
+}
+
+void drop_callback(lua_mod_handle_t *h, const char *id) {
+    for (auto it = g_callbacks.begin(); it != g_callbacks.end(); ++it) {
+        if ((*it)->handle == h && (*it)->id == id) {
+            release_callback(it->get());
+            g_callbacks.erase(it);
+            return;
+        }
+    }
+}
+
+void drop_callbacks_of(lua_mod_handle_t *h) {
+    for (auto it = g_callbacks.begin(); it != g_callbacks.end();) {
+        if ((*it)->handle == h) {
+            release_callback(it->get());
+            it = g_callbacks.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+/// 调用注册表里的 Lua 回调；参数是按钮 id（与 PC 端一致）。
+void invoke_callback(ControlCallback *cb, int ref) {
+    if (!cb || !cb->L || ref == LUA_NOREF) return;
+    if (!cb->handle || cb->handle->L != cb->L) return; // Mod 已卸载
+    lua_State *L = cb->L;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
+    lua_pushlstring(L, cb->id.data(), cb->id.size());
+    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        LOG_ERROR("[controls] {} callback failed: {}", cb->id, err ? err : "?");
+        lua_pop(L, 1);
+    }
+}
+
+/// Main.Update 后置：轮询内核状态并派发 on_press / on_release。
+void tick_postfix(patch_handle_t instance, void **arguments, void *result,
+                  const patch_method_signature_t *signature) {
+    (void)instance;
+    (void)arguments;
+    (void)result;
+    (void)signature;
+    if (!linked() || g_callbacks.empty()) return;
+    // 回调里可能自己注销按钮，所以每次都用指针确认当前项还在
+    for (size_t i = 0; i < g_callbacks.size();) {
+        ControlCallback *cb = g_callbacks[i].get();
+        if (cb->handle && cb->handle->L == cb->L) {
+            terraria_button_scope_t scope{loader_id, cb->mod_id.c_str()};
+            if (cb->on_press_ref != LUA_NOREF &&
+                terraria_button_manager_pressed(&scope, cb->id.c_str())) {
+                invoke_callback(cb, cb->on_press_ref);
+            } else if (cb->on_release_ref != LUA_NOREF &&
+                       terraria_button_manager_released(&scope,
+                                                        cb->id.c_str())) {
+                invoke_callback(cb, cb->on_release_ref);
+            }
+        }
+        if (i < g_callbacks.size() && g_callbacks[i].get() == cb) ++i;
+    }
 }
 
 /// 内核是否导出了完整的 button_manager API。
@@ -161,6 +266,11 @@ int add(lua_State *L) {
     }
     lua_pop(L, 1);
 
+    // enabled：可选布尔，默认 true（内核注册接口没有这个字段，注册后单独下发）。
+    lua_getfield(L, 1, "enabled");
+    const bool enabled = lua_isnil(L, -1) ? true : lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+
     auto *h = owner(L);
 
     // 解码图标：`<mod>/Image/` 优先，旧位置自动回退，最终仍在 Mod 目录内。
@@ -181,11 +291,46 @@ int add(lua_State *L) {
         image.size = pixels.size();
     }
 
+    // on_press / on_release：可选回调；Android 由加载器每帧轮询后派发。
+    int on_press_ref = LUA_NOREF;
+    int on_release_ref = LUA_NOREF;
+    lua_getfield(L, 1, "on_press");
+    if (lua_isfunction(L, -1))
+        on_press_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    else
+        lua_pop(L, 1);
+    lua_getfield(L, 1, "on_release");
+    if (lua_isfunction(L, -1))
+        on_release_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    else
+        lua_pop(L, 1);
+
     // 注册到内核；pixels 在调用期间保持存活。
     terraria_button_desc_t desc{scope_of(h), id.c_str(), name.c_str(), icon_path.empty() ? nullptr : &image,
                                 show_label};
-    if (!terraria_button_manager_register(&desc))
+    if (!terraria_button_manager_register(&desc)) {
+        if (on_press_ref != LUA_NOREF)
+            luaL_unref(L, LUA_REGISTRYINDEX, on_press_ref);
+        if (on_release_ref != LUA_NOREF)
+            luaL_unref(L, LUA_REGISTRYINDEX, on_release_ref);
         return luaL_error(L, "control registration failed: %s", error());
+    }
+    if (!enabled && terraria_button_manager_set_enabled)
+        terraria_button_manager_set_enabled(&desc.scope, id.c_str(), false);
+
+    ControlCallback *callback = find_callback(h, id.c_str());
+    if (callback) {
+        release_callback(callback);
+    } else {
+        g_callbacks.push_back(std::make_unique<ControlCallback>());
+        callback = g_callbacks.back().get();
+    }
+    callback->handle = h;
+    callback->L = L;
+    callback->mod_id = h ? h->mod_id : "";
+    callback->id = id;
+    callback->on_press_ref = on_press_ref;
+    callback->on_release_ref = on_release_ref;
 
     lua_pushlstring(L, id.data(), id.size());
     return 1;
@@ -196,7 +341,9 @@ int remove(lua_State *L) {
     auto *h = owner(L);
     auto scope = scope_of(h);
     const char *id = luaL_checkstring(L, 1);
-    lua_pushboolean(L, linked() && terraria_button_manager_unregister(&scope, id));
+    const bool ok = linked() && terraria_button_manager_unregister(&scope, id);
+    drop_callback(h, id);
+    lua_pushboolean(L, ok);
     return 1;
 }
 
@@ -264,14 +411,31 @@ void install() {
         return;
     }
     terraria_button_manager_install();
-    if (!terraria_button_manager_available())
+    if (!terraria_button_manager_available()) {
         LOG_ERROR("[button-interface] kernel initialization failed: {}", error());
-    else
-        LOG_INFO("[button-interface] ready: native PE buttons and caller-decoded RGBA icons");
+        return;
+    }
+    LOG_INFO("[button-interface] ready: native PE buttons and caller-decoded RGBA icons");
+
+    // 每帧在 Main.Update 之后轮询按钮状态，把 on_press / on_release 派发给 Lua。
+    const patch_handle_t main_type = patchlib_type_get_type("Terraria", "Main");
+    patch_handle_t update = main_type
+                                ? patchlib_type_get_method_by_param_count(main_type, "Update", 1)
+                                : nullptr;
+    if (update)
+        g_tick_hook = patchlib_install_prepost_hook(update, nullptr, tick_postfix);
+    if (g_tick_hook == PATCH_HOOK_INVALID_ID)
+        LOG_WARN("[button-interface] Main.Update hook unavailable; on_press/on_release disabled");
 }
 
 void shutdown() {
-    // 内核自己管理 hook；Lua 侧只需要注销 Mod 的按钮作用域。
+    // 内核自己管理 hook；这里只拆掉加载器为派发回调装的 Main.Update 钩子。
+    if (g_tick_hook != PATCH_HOOK_INVALID_ID) {
+        patchlib_uninstall_hook(g_tick_hook);
+        g_tick_hook = PATCH_HOOK_INVALID_ID;
+    }
+    for (auto &entry : g_callbacks) release_callback(entry.get());
+    g_callbacks.clear();
 }
 
 void append_image_owners(std::vector<std::string> &) {
@@ -283,6 +447,7 @@ void unregister_owner(lua_mod_handle_t *h) {
         auto scope = scope_of(h);
         terraria_button_manager_unregister_owner(&scope);
     }
+    drop_callbacks_of(h);
 }
 
 void register_api(lua_State *L, lua_mod_handle_t *h) {

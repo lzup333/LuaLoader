@@ -627,6 +627,9 @@ mod.controls.unregister("chat_test")
   `<private>/lib/Image/` → `<private>/lib/` → `<private>/Image/` → `<private>/Resources/Image/` → `<private>/`。
   也就是**新 Mod 请把 PNG 放进 `Image/`，老 Mod 原来放的位置（Mod 根目录等）不用改动也能继续用**。
   绝对路径和 `..` 一律拒绝，解析后还会校验最终文件仍在 Mod 目录内。
+- Android 的 `on_press` / `on_release` 由加载器在 `Main.Update` 之后每帧轮询派发（内核只维护状态），
+  回调参数是按钮 `id`；回调会**消费**同一帧的按下/松开状态，所以同一个按钮不要既注册回调又用
+  `pressed()` / `released()` 轮询（二选一）。`enabled = false` 时注册后即禁用，回调也不会触发。
 - PC 端 `name` 会写入 `PlayerInput.KnownTriggers` 和 `KeyStatus`，必须全局唯一；建议带 Mod 名前缀。
 - 改键后 Mod 不需要重新注册：`on_press` / `down` 读取的是游戏当前绑定。
 - PC 端改键会自动持久化到 `<tefkernel_working_dir>/tefkernel.keybinds.tef`，下次启动恢复。
