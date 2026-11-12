@@ -69,18 +69,26 @@ todo_list = { "setup" }   -- 启动时按顺序执行这些函数
 用法都在 [`doc/api.md`](doc/api.md)，一个完整示例（每帧补满魔力）：
 
 ```lua
-local stat_mana, stat_mana_max
+-- LuaLoader 示范 Mod：魔力锁定（ManaLock 精简版）
+-- 每帧在原版逻辑执行完后，把玩家当前魔力补满。
 
-function lock_mana(p)                                    -- p = 这个 Player
-    mod.patch.set_field_value(stat_mana, p,              -- 写字段：魔力 = 上限
-        mod.patch.get_field_value(stat_mana_max, p, "int32"), "int32")
+mod.meta = { pkg_id = "lzup.lua.manalock", version = "1.0.0" }
+
+local stat_mana
+local stat_mana_max
+
+function lock_mana(instance)
+    -- 显式指定 int32，不依赖内核的字段类型查询（Android 上更稳）
+    local max = mod.patch.get_field_value(stat_mana_max, instance, "int32")
+    mod.patch.set_field_value(stat_mana, instance, max, "int32")
 end
 
 function setup()
-    local player = mod.patch.get_type("Terraria", "Player")  -- 取类型
-    stat_mana     = mod.patch.get_field(player, "statMana")  -- 取字段
+    local player = mod.patch.get_type("Terraria", "Player")
+    stat_mana = mod.patch.get_field(player, "statMana")
     stat_mana_max = mod.patch.get_field(player, "statManaMax")
-    -- 钩住 Player.ResetEffects，原方法跑完后再执行 lock_mana
+
+    -- postfix：等 ResetEffects（每帧）执行完再锁满，否则会被原版覆盖
     mod.patch.install_hook(mod.patch.get_method(player, "ResetEffects", 0), { postfix = lock_mana })
 end
 
