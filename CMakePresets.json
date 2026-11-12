@@ -95,8 +95,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_C_COMPILER": "x86_64-w64-mingw32-gcc",
-        "CMAKE_CXX_COMPILER": "x86_64-w64-mingw32-g++",
-        "TARGET": "X86_WIN64"
+        "CMAKE_CXX_COMPILER": "x86_64-w64-mingw32-g++"
       }
     },
     {
@@ -107,8 +106,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "x86_64-w64-mingw32-gcc",
-        "CMAKE_CXX_COMPILER": "x86_64-w64-mingw32-g++",
-        "TARGET": "X86_WIN64"
+        "CMAKE_CXX_COMPILER": "x86_64-w64-mingw32-g++"
       }
     },
     {
@@ -119,8 +117,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_C_COMPILER": "i686-w64-mingw32-gcc",
-        "CMAKE_CXX_COMPILER": "i686-w64-mingw32-g++",
-        "TARGET": "X86_WIN32"
+        "CMAKE_CXX_COMPILER": "i686-w64-mingw32-g++"
       }
     },
     {
@@ -131,8 +128,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "i686-w64-mingw32-gcc",
-        "CMAKE_CXX_COMPILER": "i686-w64-mingw32-g++",
-        "TARGET": "X86_WIN32"
+        "CMAKE_CXX_COMPILER": "i686-w64-mingw32-g++"
       }
     },
     {
