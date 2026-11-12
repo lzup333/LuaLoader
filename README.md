@@ -15,7 +15,6 @@ patchlib 能力封装成一张 `mod` 表交给脚本。
 
 - 📖 完整 API 参考：[`doc/api.md`](doc/api.md)
 - 🎨 图形界面：[`doc/gui.md`](doc/gui.md)
-- 🧩 原生扩展：[`doc/native.md`](doc/native.md)
 
 > 💡 **写内容型 Mod 推荐配合 [LuaModQuickAPI](https://github.com/lzup333/LuaModQuickAPI) 使用。**
 > 它在 LuaLoader 的 `mod.patch` / `mod.item` / `mod.projectile` / `mod.buff` / `mod.npc` 之上，
@@ -103,15 +102,14 @@ export TEFKERNEL_LIB=./libtefkernel.linux.x86_64.so
 ./build.sh -r --package
 ```
 
-## 原生扩展
+## 需要原生代码？
 
-性能敏感或 Lua 不好实现的部分，可以自带 C/C++ 原生模块（`Resources/native/<平台>_<架构>/*.so`），
-`require` 即用。原生模块是标准 Lua C 模块，无需专用头文件或 API 表，详见 [`doc/native.md`](doc/native.md)。
+LuaLoader 不提供原生 C/C++ 模块（不再注入 `cpath`、不再分发 SDK）。需要原生能力请直接写 **KernelLoaderMod**。
 
 ## 安全提示
 
-LuaLoader 开放了完整 Lua 标准库和原生模块加载——Mod 脚本可以读写文件、执行命令、跑原生代码。
-**只安装信任来源的 Mod**；装前建议打开压缩包看一眼 `.lua` 和 `native/` 目录。
+LuaLoader 开放了完整 Lua 标准库——Mod 脚本可以读写文件、执行命令。
+**只安装信任来源的 Mod**；装前建议打开压缩包看一眼 `.lua` 脚本。
 
 ## 许可证
 

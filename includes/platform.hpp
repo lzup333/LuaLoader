@@ -27,13 +27,6 @@
 
 #if defined(_WIN32) || defined(_WIN64)
 #define LUALOADER_PLATFORM_NAME "windows"
-#elif defined(__APPLE__) && defined(__MACH__)
-#include <TargetConditionals.h>
-#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
-#define LUALOADER_PLATFORM_NAME "ios"
-#else
-#define LUALOADER_PLATFORM_NAME "macos"
-#endif
 #elif defined(__ANDROID__)
 #define LUALOADER_PLATFORM_NAME "android"
 #elif defined(__linux__)

@@ -586,7 +586,7 @@ mod.recipe.add{
 
 同一个接口在两端映射到不同实现：
 
-- **PC（Windows / Linux / macOS）**：注册进游戏原生「设置 -> 控制」菜单，玩家可直接改键。
+- **PC（Windows / Linux）**：注册进游戏原生「设置 -> 控制」菜单，玩家可直接改键。
 - **Android（PE）**：注册原生触摸按钮（需要 `icon` / `show_label`）。
 
 ```lua

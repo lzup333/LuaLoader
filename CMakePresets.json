@@ -32,15 +32,6 @@
       }
     },
     {
-      "name": "base-macos",
-      "hidden": true,
-      "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": {
-        "ANDROID_MODE": "OFF"
-      }
-    },
-    {
       "name": "base-android",
       "hidden": true,
       "generator": "Unix Makefiles",
@@ -145,46 +136,6 @@
       }
     },
     {
-      "name": "macos-x86_64-debug",
-      "inherits": "base-macos",
-      "displayName": "macOS x86_64 Debug",
-      "description": "Build for macOS x86_64 using osxcross - Debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/toolchains/osxcross-x86_64.cmake"
-      }
-    },
-    {
-      "name": "macos-x86_64-release",
-      "inherits": "base-macos",
-      "displayName": "macOS x86_64 Release",
-      "description": "Build for macOS x86_64 using osxcross - Release",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/toolchains/osxcross-x86_64.cmake"
-      }
-    },
-    {
-      "name": "macos-arm64-debug",
-      "inherits": "base-macos",
-      "displayName": "macOS ARM64 Debug",
-      "description": "Build for macOS ARM64 using osxcross - Debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/toolchains/osxcross-arm64.cmake"
-      }
-    },
-    {
-      "name": "macos-arm64-release",
-      "inherits": "base-macos",
-      "displayName": "macOS ARM64 Release",
-      "description": "Build for macOS ARM64 using osxcross - Release",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/toolchains/osxcross-arm64.cmake"
-      }
-    },
-    {
       "name": "android-arm64-debug",
       "inherits": "base-android",
       "displayName": "Android ARM64 Debug",
@@ -257,22 +208,6 @@
     {
       "name": "windows-x86-release",
       "configurePreset": "windows-x86-release"
-    },
-    {
-      "name": "macos-x86_64-debug",
-      "configurePreset": "macos-x86_64-debug"
-    },
-    {
-      "name": "macos-x86_64-release",
-      "configurePreset": "macos-x86_64-release"
-    },
-    {
-      "name": "macos-arm64-debug",
-      "configurePreset": "macos-arm64-debug"
-    },
-    {
-      "name": "macos-arm64-release",
-      "configurePreset": "macos-arm64-release"
     },
     {
       "name": "android-arm64-debug",

@@ -76,7 +76,9 @@ if (MINGW)
     # 静态链接 MinGW 运行库，避免目标机缺少
     # libstdc++-6.dll / libgcc_s_*.dll / libwinpthread-1.dll 导致加载失败
     target_link_options(LuaLoader PRIVATE -static)
-    # 导出全部符号（lua_* / luaL_* / patchlib_*），供原生模块 DLL 解析
+    # PE 需要显式导出（项目没有 .def / __declspec(dllexport)）：
+    # KernelLoader 靠 memdl_sym 取 ml_create 入口、并按名回填 patchlib_* 槽位。
+    # ELF 默认可见性即导出，strip --strip-all 不动 .dynsym，无需此选项。
     target_link_options(LuaLoader PRIVATE -Wl,--export-all-symbols)
 endif()
 
@@ -89,13 +91,6 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release")
                 COMMENT "Stripping symbols from LuaLoader library using strip command"
                 VERBATIM
         )
-    elseif (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        add_custom_command(TARGET LuaLoader POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E echo "Stripping symbols from LuaLoader..."
-                COMMAND ${CMAKE_STRIP} -S $<TARGET_FILE:LuaLoader>
-                COMMENT "Stripping symbols from LuaLoader library using strip command"
-                VERBATIM
-        )
     endif()
 endif()
 
@@ -104,8 +99,6 @@ if(ANDROID)
     set(SYSTEM_NAME "android")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SYSTEM_NAME "linux")
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(SYSTEM_NAME "darwin")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(SYSTEM_NAME "windows")
 else()

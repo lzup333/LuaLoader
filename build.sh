@@ -18,8 +18,6 @@
 #   -c, --clean            配置前清空对应 build 目录
 #   -j, --jobs N           并行数（默认 nproc）
 #       --gui              （已弃用）原生 GUI 现为内置，无需开关
-#       --implib           把 Windows 导入库复制到 sdk/windows_<arch>/
-#       --sdk-zip          把 sdk/ 打成 dist/LuaLoader-sdk-v<版本>.zip（Release asset）
 #       --package          构建后打包 dist/lualoader.tefpkg 并生成发行 zip
 #       --package-only     跳过编译，仅用现有产物打包
 #   -f, --fingerprint HEX  tefpkg 指纹（默认 0x114514）
@@ -60,7 +58,7 @@ ALL_PLATFORMS="linux-x64 linux-x86 win-x64 win-x86 android-arm64 android-arm"
 PLATFORMS=()
 BT=Release
 CLEAN=0; JOBS="$(nproc 2>/dev/null || echo 4)"
-GUI=0; IMPLIB=0; PACKAGE=0; PACKAGE_ONLY=0; NO_ZIP=0; SDKZIP=0; DRY=0
+GUI=0; PACKAGE=0; PACKAGE_ONLY=0; NO_ZIP=0; DRY=0
 FP=0x114514
 KERNEL_LIB="${TEFKERNEL_LIB:-}"
 
@@ -73,13 +71,11 @@ while [ $# -gt 0 ]; do
     -c|--clean)   CLEAN=1; shift ;;
     -j|--jobs)    JOBS="$2"; shift 2 ;;
     --gui)        GUI=1; shift ;;
-    --implib)     IMPLIB=1; shift ;;
     --package)    PACKAGE=1; shift ;;
     --package-only) PACKAGE_ONLY=1; PACKAGE=1; shift ;;
     -f|--fingerprint) FP="$2"; shift 2 ;;
     --kernel-lib)   KERNEL_LIB="$2"; shift 2 ;;
     --no-zip)     NO_ZIP=1; shift ;;
-    --sdk-zip)    SDKZIP=1; shift ;;
     -n|--dry-run) DRY=1; shift ;;
     -h|--help)    usage; exit 0 ;;
     all)          PLATFORMS+=($ALL_PLATFORMS); shift ;;
@@ -164,28 +160,6 @@ build_platform() {
   run cmake --build "$dir" -j "$JOBS"
 }
 
-copy_implib() {
-  local p="$1" dir; dir="$(builddir_of "$p")"
-  case "$p" in
-    win-x64) run mkdir -p "$ROOT/sdk/windows_x64"; run cp -f "$dir/libloader.windows.x64.dll.a" "$ROOT/sdk/windows_x64/" ;;
-    win-x86) run mkdir -p "$ROOT/sdk/windows_x86"; run cp -f "$dir/libloader.windows.x86.dll.a" "$ROOT/sdk/windows_x86/" ;;
-  esac
-}
-
-# Linux/Android 原生模块需要链接 loader 的 .so 以写入 DT_NEEDED。
-copy_sdk_loader() {
-  local p="$1" dir art platdir
-  dir="$(builddir_of "$p")"; art="$(artifact_of "$p")"
-  case "$p" in
-    linux-*)   platdir="linux_${p#linux-}" ;;
-    android-*) platdir="android_${p#android-}" ;;
-    *) return 0 ;;
-  esac
-  [ -f "$dir/$art" ] || return 0
-  run mkdir -p "$ROOT/sdk/loader/$platdir"
-  run cp -f "$dir/$art" "$ROOT/sdk/loader/$platdir/"
-}
-
 # ---------- 打包 ----------
 package() {
   local stage="$ROOT/build/tefpkg-stage"
@@ -226,31 +200,6 @@ package() {
   run unzip -l "$zip"
 }
 
-# ---------- 原生模块 SDK ----------
-# Windows 导入库（.dll.a）只随 Release 的独立 asset 分发，不进版本库：
-# 二进制提交会让仓库膨胀，且它们本就可以由 build.sh 重新生成。
-package_sdk() {
-  local ver zip
-  ver="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/Info.json" | head -1)"
-  [ -n "$ver" ] || ver=0.0.0
-  zip="$ROOT/dist/LuaLoader-sdk-v$ver.zip"
-
-  if [ ! -d "$ROOT/sdk" ]; then
-    err "没有 sdk/ 目录：先构建至少一个平台（Windows 导入库 / Linux、Android loader .so）"
-    return 1
-  fi
-  if [ -z "$(find "$ROOT/sdk" -type f -print -quit)" ]; then
-    err "sdk/ 下没有可用文件：先构建 Windows（--implib）或 Linux/Android 平台"
-    return 1
-  fi
-
-  info "──────── 打包原生模块 SDK ────────"
-  run rm -f "$zip"; run mkdir -p "$ROOT/dist"
-  run bash -c "cd '$ROOT' && zip -qrX '$zip' sdk" || return 1
-  info "完成：$zip"
-  run unzip -l "$zip"
-}
-
 # ---------- 主流程 ----------
 info "LuaLoader 构建脚本   ROOT=$ROOT"
 info "构建类型：$BT   平台：${PLATFORMS[*]}   并行：$JOBS   指纹：$FP"
@@ -259,12 +208,6 @@ if [ "$PACKAGE_ONLY" != 1 ]; then
   FAILED=()
   for p in "${PLATFORMS[@]}"; do
     if ! build_platform "$p"; then FAILED+=("$p"); fi
-    case "$p" in win-*) [ "$IMPLIB" = 1 ] && copy_implib "$p" ;; esac
-  done
-  # 默认也刷新一下 Windows 导入库（若刚构建过 win）
-  for p in "${PLATFORMS[@]}"; do
-    case "$p" in win-x64|win-x86) copy_implib "$p" ;; esac
-    copy_sdk_loader "$p"
   done
   if [ ${#FAILED[@]} -gt 0 ]; then
     err "以下平台构建失败：${FAILED[*]}"
@@ -273,10 +216,6 @@ fi
 
 if [ "$PACKAGE" = 1 ]; then
   package || { err "打包失败"; exit 1; }
-fi
-
-if [ "$SDKZIP" = 1 ]; then
-  package_sdk || { err "SDK 打包失败"; exit 1; }
 fi
 
 info "全部完成。"

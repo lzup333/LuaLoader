@@ -25,19 +25,9 @@
 #include "lua_engine.hpp"
 #include "lua_api.hpp"
 
-#include <atomic>
-#include <cctype>
-#include <map>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <vector>
-
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
 
 extern "C" {
 #include "lua.h"
@@ -66,181 +56,17 @@ static void open_all_libs(lua_State *L) {
     luaL_openlibs(L);
 }
 
-/// 找到 Mod 的原生库目录列表（按平台_架构，其次平台，再次 mod 根）
-static std::vector<std::string> native_dirs(const std::string &mod_dir, const std::string &private_dir,
-                                            const std::string &platform, const std::string &arch);
-
-#if defined(__ANDROID__)
-/// 当前进程（游戏）的应用私有目录：/data/data/<pkg>/files
-/// Android 的 linker 命名空间只允许 /data、/mnt/expand，/storage 下的 .so 无法 dlopen，
-/// 因此需要把原生库复制到这里再加载。
-static std::string android_app_private_dir() {
-    std::ifstream cmd("/proc/self/cmdline", std::ios::binary);
-    std::string pkg;
-    if (cmd)
-        std::getline(cmd, pkg, '\0');
-    if (pkg.empty())
-        return {};
-    return "/data/data/" + pkg + "/files";
-}
-#endif
-
-/// 把候选目录里的原生库复制到 Android 应用私有目录。
-///
-/// 为什么需要 staging：
-///   Android 的 linker namespace 只允许从 /data、/mnt/expand 等目录 dlopen；
-///   Mod 私有目录在 /storage/emulated/0/Android/data/... 下，无法直接加载，
-///   所以先搬到 /data/data/<包名>/files/lualoader_native/<mod_id>/。
-///
-/// 为什么“临时目录 → 原子 rename → 清理旧文件”：
-///   - 直接覆盖正在被映射的 .so 会 ETXTBSY / 读到被截断的库；
-///   - 先完整复制到临时文件名，保证发布出去的每个库都是完整的；
-///   - rename 只替换目录项，已经 dlopen 映射的旧 inode 仍然有效（热更新安全）；
-///   - 最后删掉本次没有提供的旧 .so，避免下次启动又加载到已移除的模块。
-///
-/// @param src_dirs 候选源目录，前面的优先；同名文件 first match wins
-/// @param dst_dir  应用私有目录下的暂存目录
-/// @param mod_id   仅用于日志
-/// @return false 表示 staging 失败；调用方不应再回退到旧缓存目录
-static bool stage_native_libs(const std::vector<std::string> &src_dirs, const std::string &dst_dir,
-                              const std::string &mod_id) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    const auto failed = [&](const char *action) {
-        LOG_WARN("[mod {}] native staging {} failed: {}", mod_id, action, ec.message());
-        return false;
-    };
-    // 1) 收集所有候选目录中的 .so；同名文件以先扫描到的目录为准（目录优先级）。
-    std::map<std::string, fs::path> sources;
-    for (const auto &dir : src_dirs) {
-        if (!fs::is_directory(dir, ec)) {
-            if (ec && ec != std::errc::no_such_file_or_directory && ec != std::errc::not_a_directory)
-                return failed("scan");
-            continue;
-        }
-        fs::directory_iterator it(dir, ec), end;
-        if (ec)
-            return failed("scan");
-        while (it != end) {
-            const bool regular = it->is_regular_file(ec);
-            if (ec)
-                return failed("stat");
-            if (regular && it->path().extension() == ".so")
-                sources.emplace(it->path().filename().string(), it->path()); // first match wins
-            it.increment(ec);
-            if (ec)
-                return failed("scan");
-        }
-    }
-    // 2) 确保目标目录存在。
-    fs::create_directories(dst_dir, ec);
-    if (ec)
-        return failed("mkdir");
-    // 3) 建一个点号前缀的临时目录（不会被当成可加载的 .so 目录），
-    //    名字带自增序号避免并发/残留冲突。
-    static std::atomic<unsigned long long> sequence{0};
-    fs::path temporary;
-    bool created = false;
-    for (int i = 0; i < 128 && !created; ++i) {
-        temporary = fs::path(dst_dir) / (".stage-" + std::to_string(++sequence));
-        created = fs::create_directory(temporary, ec);
-        if (ec)
-            return failed("temporary directory");
-    }
-    if (!created) {
-        LOG_WARN("[mod {}] could not allocate native staging directory", mod_id);
-        return false;
-    }
-
-    // 无论成功失败，退出时都清掉临时目录（发布后它应为空）。
-    struct Cleanup {
-        fs::path path;
-
-        ~Cleanup() {
-            std::error_code ignored;
-            fs::remove_all(path, ignored);
-        }
-    } cleanup{temporary};
-
-    // 4) 先把所有库完整复制到临时目录；任意一个失败就整体放弃，不发布半套文件。
-    for (const auto &source : sources) {
-        fs::copy_file(source.second, temporary / source.first, ec);
-        if (ec)
-            return failed("copy");
-    }
-    // 5) 逐个发布：rename 原子替换目录项，已映射的旧库不会被截断。
-    for (const auto &source : sources) {
-        fs::rename(temporary / source.first, fs::path(dst_dir) / source.first, ec);
-        if (ec)
-            return failed("publish");
-    }
-    // 6) 清理本次未提供的旧 .so，避免下次启动加载到已删除/改名的模块。
-    fs::directory_iterator it(dst_dir, ec), end;
-    if (ec)
-        return failed("prune scan");
-    while (it != end) {
-        const auto path = it->path();
-        const bool regular = it->is_regular_file(ec);
-        if (ec)
-            return failed("prune stat");
-        if (regular && path.extension() == ".so" && !sources.count(path.filename().string())) {
-            fs::remove(path, ec);
-            if (ec)
-                return failed("prune");
-        }
-        it.increment(ec);
-        if (ec)
-            return failed("prune scan");
-    }
-    return true;
-}
-
-/// 返回最终要写入 package.cpath 的原生库目录。
-/// - Android：先 staging 到应用私有目录；成功返回 {dst_dir}，失败返回空。
-/// - 其它平台：直接返回候选目录列表（Linux 桌面可直接 dlopen，Windows 用 LoadLibrary）。
-static std::vector<std::string> prepare_native_libs(const std::string &mod_dir, const std::string &private_dir,
-                                                    const std::string &platform, const std::string &arch,
-                                                    const std::string &mod_id) {
-    std::vector<std::string> src_dirs = native_dirs(mod_dir, private_dir, platform, arch);
-#if defined(__ANDROID__)
-    // 拿不到 /data/data/<pkg>/files 就退回原目录——大概率会被 linker namespace 拒绝，
-    // 但至少保留原始错误，方便排查。
-    const std::string base = android_app_private_dir();
-    if (base.empty())
-        return src_dirs;
-    // mod_id 可能包含路径分隔符等字符，替换成安全的目录名。
-    std::string safe_id = mod_id;
-    for (char &c : safe_id)
-        if (!isalnum((unsigned char)c) && c != '.' && c != '_' && c != '-')
-            c = '_';
-    const std::string dst_dir = base + "/lualoader_native/" + safe_id;
-    if (stage_native_libs(src_dirs, dst_dir, mod_id))
-        return {dst_dir};
-    // staging 失败时返回空，绝不回退到旧缓存目录（否则会加载到过期/残留的模块）。
-    return {};
-#else
-    (void)mod_id;
-    return src_dirs;
-#endif
-}
-
-/// 配置 package：把 Mod 目录加入 package.path（保留系统默认路径）。
-/// 同时把 Mod 的原生库目录加入 package.cpath，并保留 package.loadlib。
-///
-/// 原生模块是标准 Lua C 模块：由 require 触发 loadlib 加载，loader 不预加载、不注入 API 表。
-/// 模块对 lua_* 的依赖在链接时记录：
-///   - Linux/Android：DT_NEEDED libloader.<平台>.<架构>.so
-///   - Windows：loader 导入库
-/// 因此运行时即使 loader 是 RTLD_LOCAL，模块也能在依赖链里解析到符号。
-static void configure_package(lua_State *L, const std::string &mod_dir,
-                              const std::vector<std::string> &native_search_dirs) {
+/// 配置 package：把 Mod 目录加入 package.path，保证 require 能加载 Mod 自带的 Lua 模块。
+/// 原生 C 模块不再支持（不注入 cpath、不分发 SDK，写 C 请用 KernelLoaderMod）；
+/// package 库保持 Lua 原样——只"不提供"，不"阻断"。
+static void configure_package(lua_State *L, const std::string &mod_dir) {
     lua_getglobal(L, "package");
     if (!lua_istable(L, -1)) {
         lua_pop(L, 1);
         return;
     }
 
-    // 在默认搜索路径前追加 Mod 目录，保证 require 能加载 Mod 自带的 Lua 模块
+    // 在默认搜索路径前追加 Mod 目录
     lua_getfield(L, -1, "path");
     const char *default_path = lua_tostring(L, -1);
     const std::string mod_pattern = mod_dir + "/?.lua;" + mod_dir + "/?/init.lua;";
@@ -249,48 +75,7 @@ static void configure_package(lua_State *L, const std::string &mod_dir,
     lua_pushstring(L, pattern.c_str());
     lua_setfield(L, -2, "path");
 
-    // 开放原生模块：Mod 平台原生目录优先
-    std::string native_pattern;
-    for (const auto &dir : native_search_dirs) {
-#ifdef _WIN32
-        native_pattern += dir + "/?.dll;";
-#else
-        native_pattern += dir + "/?.so;";
-#endif
-    }
-    lua_getfield(L, -1, "cpath");
-    const char *default_cpath = lua_tostring(L, -1);
     lua_pop(L, 1);
-    const std::string cpath = native_pattern + (default_cpath ? default_cpath : "");
-    lua_pushstring(L, cpath.c_str());
-    lua_setfield(L, -2, "cpath");
-    // 保留 package.loadlib（open_all_libs 已提供，这里不再置空）
-    lua_pop(L, 1);
-}
-
-/// 找到 Mod 的原生库目录列表（按优先级从高到低）。
-///
-/// 每个根目录（private_dir、mod_dir）下依次尝试：
-///   native/<平台>_<架构>      —— 内核部署 Resources/ 后的标准位置
-///   native/<平台>             —— 不区分架构的兜底
-///   lib/native/<平台>_<架构>  —— 入口脚本同级目录（本地开发常见）
-///   lib/native/<平台>
-///
-/// 之所以要这么多候选：Mod 可能被内核部署到 private_dir，也可能在本地开发时
-/// 直接从 Resources/lib 跑；两种布局都要能找到原生库。
-static std::vector<std::string> native_dirs(const std::string &mod_dir, const std::string &private_dir,
-                                            const std::string &platform, const std::string &arch) {
-    std::vector<std::string> dirs;
-    const std::string pa = platform + "_" + arch;
-    for (const std::string &base : {private_dir, mod_dir}) {
-        if (base.empty())
-            continue;
-        dirs.push_back(base + "/native/" + pa);
-        dirs.push_back(base + "/native/" + platform);
-        dirs.push_back(base + "/lib/native/" + pa);
-        dirs.push_back(base + "/lib/native/" + platform);
-    }
-    return dirs;
 }
 
 static bool run_file(lua_State *L, const std::string &path, std::string &err) {
@@ -463,9 +248,9 @@ static std::vector<std::filesystem::path> entry_candidates(const lua_mod_handle_
 /// 为单个 Mod 建立独立的 Lua 状态机并执行入口脚本。
 ///
 /// 顺序很重要：
-///   1. 定位入口脚本（同时确定 mod_dir，后面的原生库候选目录依赖它）
+///   1. 定位入口脚本（同时确定 mod_dir，package.path 依赖它）
 ///   2. 创建 Lua 状态机
-///   3. 打开标准库 → 准备原生库目录 → 配置 package.path / package.cpath
+///   3. 打开标准库 → 配置 package.path（不注入 Mod 原生库目录）
 ///   4. 注入全局 mod 表（日志/文件/patch/gui...）
 ///   5. 执行入口脚本；失败时走 close()，先注销回调/钩子再关状态机
 ///   6. 读取 mod.meta，并缓存 init/cleanup/on_gui 的注册表引用
@@ -499,11 +284,9 @@ bool load(lua_mod_handle_t *handle, const std::string &config_path, const std::s
     }
     handle->L = L;
 
-    // 3) 标准库 + 原生库搜索目录 + package.path/cpath。
+    // 3) 标准库 + package.path（不再注入 Mod 原生库目录）。
     open_all_libs(L);
-    const std::vector<std::string> native_search =
-        prepare_native_libs(handle->mod_dir, private_dir, handle->platform, handle->arch, handle->mod_id);
-    configure_package(L, handle->mod_dir, native_search);
+    configure_package(L, handle->mod_dir);
 
     // 4) 注入 mod 表；必须在执行入口脚本之前完成。
     lua_api::register_api(L, handle);
@@ -562,8 +345,7 @@ void uninstall_hooks(lua_mod_handle_t *handle) {
 ///   1. 先卸载钩子；
 ///   2. 再注销物品/弹幕/Buff/NPC/配方等 C++ 侧回调（此时 Lua 状态机必须还活着，
 ///      因为注销过程可能要读 Lua 注册表/引用）；
-///   3. 最后 lua_close：触发 Lua 的 __gc，并卸载通过 require/loadlib 打开的原生库
-///      （Lua 的 CLIBS 表会在状态机关闭时 dlclose/FreeLibrary）。
+///   3. 最后 lua_close：触发 Lua 的 __gc，Lua 自己打开的动态库（CLIBS）也由它释放。
 ///
 /// 如果先 lua_close 再注销，C++ 侧持有的引用/句柄就会指向已释放的状态机。
 void close(lua_mod_handle_t *handle) {

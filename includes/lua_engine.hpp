@@ -46,7 +46,7 @@ struct lua_mod_handle_t {
     std::string logs_dir;    ///< Mod 日志目录（内核传入）
     std::string config_path; ///< Mod 配置文件路径（重载时重建 manifest 用）
     std::string entry;       ///< 入口 lua 文件（相对 <private_dir>/lib）
-    std::string platform;    ///< 运行平台（android/linux/windows/macos/ios/unknown）
+    std::string platform;    ///< 运行平台（android/linux/windows/unknown）
     std::string arch;        ///< 运行架构（arm64/arm/x64/x86/unknown）
     lua_State *L{nullptr};   ///< 该 Mod 独立的 Lua 状态机
     lua_mod_info_t info;
