@@ -637,10 +637,8 @@ mod.controls.unregister("chat_test")
 - 回调在游戏主线程执行；不要在回调里做阻塞操作。
 - 需要桌面内核包含 `keybind_manager`（`terraria_keybind_manager_*` 符号）。
 
-一个完整的可运行示例见
-[`examples/keybind_demo`](../examples/keybind_demo)：按下 F6 后通过 `Main.NewText` 在聊天栏输出。
 
-
+## `mod.net`: 联机同步
 ```lua
 mod.net.mode()                          -- 0 单机 / 1 客户端 / 2 专用服 / 3 开房
 mod.net.send(channel, payload)          -- 客户端 -> 服务端发消息
