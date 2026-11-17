@@ -111,6 +111,10 @@ void register_api(lua_State *L, lua_mod_handle_t *handle) {
     lua_setfield(L, -2, "item");
 
     lua_newtable(L);
+    add_audio(L);
+    lua_setfield(L, -2, "audio");
+
+    lua_newtable(L);
     add_projectile(L);
     lua_setfield(L, -2, "projectile");
 
@@ -121,6 +125,10 @@ void register_api(lua_State *L, lua_mod_handle_t *handle) {
     lua_newtable(L);
     add_npc(L);
     lua_setfield(L, -2, "npc");
+
+    lua_newtable(L);
+    add_tile(L);
+    lua_setfield(L, -2, "tile");
 
     lua_newtable(L);
     add_net(L);
@@ -160,6 +168,8 @@ void uninstall_all_hooks(lua_mod_handle_t *handle) {
 void shutdown_global_hooks() {
     shutdown_item_hooks();
     shutdown_buff_hooks();
+    shutdown_npc_hooks();
+    shutdown_tile_hooks();
     shutdown_recipe_hooks();
 }
 

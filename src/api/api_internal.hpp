@@ -49,6 +49,8 @@ extern "C" {
 #include "tefkernel/terraria/content/projectile_manager.h"
 #include "tefkernel/terraria/content/npc_manager.h"
 #include "tefkernel/terraria/content/buff_manager.h"
+#include "tefkernel/terraria/content/tile_manager.h"
+#include "tefkernel/terraria/content/audio_manager.h"
 #include "tefkernel/terraria/netmanager.h"
 #include "tefkernel/terraria/language_manager.h"
 #include "tefkernel/terraria/recipe_manager.h"
@@ -120,6 +122,11 @@ void unref_default_values(lua_State *L, std::vector<LuaItemFieldValue> &defaults
 void item_field_write(patch_handle_t field, patch_handle_t inst, patch_type_t type, const void *value);
 void premultiply_alpha(unsigned char *buf, size_t sz);
 std::string resolve_item_image(const std::string &private_dir, const std::string &mod_dir, const std::string &rel);
+int find_item_runtime_id(const lua_mod_handle_t *owner, const std::string &name);
+int culture_from_lang_key(const char *key);
+std::string json_escape_str(const std::string &in);
+patch_handle_t create_texture_asset_from_png(const std::string &path, std::vector<unsigned char> &pixels,
+                                             int &w, int &h, bool &tried, const char *log_prefix);
 
 // ---- patch 内部共用 ----
 bool type_from_name(const char *name, patch_type_t *out);
@@ -145,16 +152,22 @@ void add_patch_hook(lua_State *L);
 void add_net(lua_State *L);
 void add_recipe(lua_State *L);
 void add_item(lua_State *L);
+void add_audio(lua_State *L);
+patch_handle_t resolve_vanilla_sound(const char *name);
 void add_projectile(lua_State *L);
 void add_buff(lua_State *L);
 void add_npc(lua_State *L);
+void add_tile(lua_State *L);
 
 // ---- 配方清理 ----
 void unregister_recipes(lua_mod_handle_t *handle);
 void unregister_buffs(lua_mod_handle_t *handle);
 void unregister_npcs(lua_mod_handle_t *handle);
+void unregister_tiles(lua_mod_handle_t *handle);
 void shutdown_item_hooks();
 void shutdown_buff_hooks();
+void shutdown_npc_hooks();
+void shutdown_tile_hooks();
 void shutdown_recipe_hooks();
 
 } // namespace lualoader::lua_api

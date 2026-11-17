@@ -358,6 +358,7 @@ void close(lua_mod_handle_t *handle) {
     lua_api::unregister_buffs(handle);
     lua_api::unregister_projectiles(handle);
     lua_api::unregister_npcs(handle);
+    lua_api::unregister_tiles(handle);
     lua_api::unregister_recipes(handle);
     // 3) 关状态机；原生库句柄由 Lua 自己管理并在这里一并释放。
     if (handle->L) {

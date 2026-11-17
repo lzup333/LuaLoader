@@ -864,6 +864,16 @@ static int l_item_register(lua_State *L) {
     return 1;
 }
 
+int find_item_runtime_id(const lua_mod_handle_t *owner, const std::string &name) {
+    if (!owner || name.empty())
+        return -1;
+    for (LuaItemEntry *e : g_lua_items) {
+        if (e && e->owner == owner && e->name == name)
+            return e->item.runtime_id;
+    }
+    return -1;
+}
+
 /// mod.item.runtime_id(name) -> int | nil（注册后内核分配的运行时 ID）
 static int l_item_runtime_id(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);

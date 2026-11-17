@@ -51,6 +51,7 @@ void unregister_items(lua_mod_handle_t *handle);
 void unregister_projectiles(lua_mod_handle_t *handle);
 void unregister_buffs(lua_mod_handle_t *handle);
 void unregister_npcs(lua_mod_handle_t *handle);
+void unregister_tiles(lua_mod_handle_t *handle);
 
 /// 清掉该 Mod 通过 mod.recipe 注册的配方
 void unregister_recipes(lua_mod_handle_t *handle);

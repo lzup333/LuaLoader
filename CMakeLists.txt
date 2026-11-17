@@ -36,10 +36,12 @@ set(LUALOADER_SOURCES
         src/api/api_patch_struct.cpp
         src/api/api_patch_hook.cpp
         src/api/api_item.cpp
+        src/api/api_audio.cpp
         src/api/api_recipe.cpp
         src/api/api_projectile.cpp
         src/api/api_npc.cpp
         src/api/api_buff.cpp
+        src/api/api_tile.cpp
         src/api/api_register.cpp
         src/gui.cpp
         src/gui/gui_images.cpp

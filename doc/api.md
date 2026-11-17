@@ -4,7 +4,7 @@
 
 > 💡 **内容型 Mod 推荐用 [LuaModQuickAPI](https://github.com/lzup333/LuaModQuickAPI) 编写。**
 > 它在本文档的底层 API 之上提供字段代理、注册简写和 AI 辅助，并附带
-> **合成 / 物品 / 弹幕 / Buff / NPC** 五章开发指南（说明 + 示例 + 注意事项）。
+> **合成 / 物品 / 弹幕 / Buff / NPC / 图格** 六章开发指南（说明 + 示例 + 注意事项）。
 > 本文档仍然适合查底层 API 的精确签名；日常写内容 Mod 可以先看 QuickAPI 的章节。
 
 ## 最小 Mod
@@ -473,11 +473,28 @@ mod.npc.register{
     },
     vanilla_ai = false,              -- true：原版 AI 先跑，再调 ai
     ai = function(npc) end,          -- 定义后跳过原版 NPC.AI()，位移/重力自己做
-    loot = {                         -- 死亡时自动掉落（物品 id / 数量）
+    loot = {                         -- 死亡时自动掉落（支持原版 id / 本 Mod 自定义物品名）
         { id = 23, count = 3 },
+        { item = "my_slime_gel", min = 1, max = 3, chance = 0.5 },
+    },
+    language = {                     -- 名称与图鉴简介（也支持 zh = "我的史莱姆" 简写）
+        en = { name = "Lua Slime", bestiary = "A gel cube from Lua." },
+        zh = { name = "Lua 史莱姆", bestiary = "一只来自 Lua 的凝胶方块。" },
+    },
+    bestiary = {                     -- 设 false 可排除出图鉴
+        kind            = "enemy",   -- "enemy" | "critter" | "town"
+        stars           = 2,         -- 稀有度星级 1..5
+        quick_unlock    = false,     -- true：击杀 1 次解锁全部信息
+        tags            = { "Forest", "DayTime" }, -- SpawnConditions 字段名
+        banner_item     = "my_slime_banner",       -- 击杀达到计数时掉落旗帜（可选）
+        kills_to_banner = 50,
+        include_loot    = true,      -- true（默认）：同步 loot 到图鉴掉落列表
     },
     on_death = function(npc) end,    -- 死亡回调（别名 on_kill），先于 loot 执行
 }
+
+-- 取运行时 ID（已分配时返回 >= 697）
+local rid = mod.npc.runtime_id("lua_slime")
 
 -- 生成（世界坐标），返回 Main.npc 下标
 local index = mod.npc.spawn("lua_slime", x, y)
@@ -488,8 +505,61 @@ local drop = mod.npc.drop_item(23, x, y, 3)
 
 - 自定义 ID 从 `NPCID.Count`（697）之后分配，不占用原版 ID；
 - 内核会扩容 `TextureAssets.Npc`、`Main.npcFrameCount`、`NPCID.Sets.*`、`Player.npcTypeNoAggro`、`Lang._npcNameCache` 等按 type 索引的表；
-- `loot` 在 NPC 死亡时按尸体中心掉落；`on_death`（`on_kill`）先执行，可以在里面再调 `drop_item` 做条件掉落；
+- `language` 会同时注入 `Lang.GetNPCName` 与怪物图鉴简介（`bestiary` / `flavor` / `description` 字段）；
+- `bestiary.tags` 填写 `Terraria.GameContent.Bestiary.SpawnConditionTags.SpawnConditions` 下各静态分组中的字段名（如 `Forest`、`Underground`、`DayTime`、`NightTime`）；
+- `loot` 在 NPC 死亡时按尸体中心掉落，支持 `id`/`item`/`name`、`count`/`stack`/`min`/`max`、`chance`（`0..1`）或 `chance_numerator`/`chance_denominator`；`on_death`（`on_kill`）先执行；
 - `defaults.boss = true` 时内核会自动补 `NPCID.Sets.BossHeadTextures`，Boss 血条与小地图图标随即可用。
+
+## `mod.tile`：自定义图格
+
+```lua
+local tid = mod.tile.register{
+    name           = "purple_ore",    -- 必填，同 Mod 内唯一
+    texture        = "purple_ore.png",-- PNG 贴图（按 Terraria 图格图集排列）
+    object_style   = "none",          -- 可选预设："none" | "torch" | "platform" | "chair" | "workbench" |
+                                      -- "table" | "sapling" | "banner" | "closed_door" | "1x1" | "1x2" |
+                                      -- "2x1" | "2x2" | "3x2" | "3x3" | "3x3_wall"
+    solid          = true,            -- 实心碰撞（"platform" / "closed_door" 默认 true，其余多格预设默认 false）
+    solid_top      = false,           -- 仅顶部可站立（"platform" 默认 true）
+    block_light    = true,            -- 遮挡光照（默认同实心方块的 solid；"closed_door" 默认 true）
+    frame_important= false,           -- 按帧图摆放（object_style != "none" 时默认 true）
+    merge_dirt     = false,           -- 与泥土融合
+    min_pick       = 35,              -- 最低镐力要求
+    mine_resist    = 1.5,             -- 挖掘耐久系数（默认 1.0）
+    cut            = false,           -- 可被挥砍破坏
+    no_fail        = false,           -- 一击即碎
+    no_attach      = false,
+    table          = false,
+    lava_death     = false,
+    water_death    = false,
+    shine          = 1150,            -- 闪光频率（> 0 时启用 tileShine/tileShine2）
+    spelunker      = true,            -- 洞穴探险高亮
+    bouncy         = false,
+    blend_all      = false,
+    lava_immune_object = false,
+    dust_type      = 14,              -- 挖掘粒子类型（省略则沿用默认）
+    hit_sound      = { type = 21, style = 1 }, -- 敲击音效
+    drop           = "purple_ore_item", -- false 禁掉落 | 物品 id | 本 Mod 物品名 | { item=..., count=... }
+    drop_stack     = 1,
+    on_drop        = function(x, y) return "purple_ore_item", 1 end, -- 可选动态掉落覆盖
+    merge_with     = { 1, "another_tile" }, -- 双向图格融合（原版 ID 或本 Mod 图格名）
+    adj_tiles      = { 18 },          -- 等价合成站列表（如 18 = 工作台，支持自定义图格名）
+    light          = { r = 0.65, g = 0.25, b = 0.85 }, -- 静态自发光 RGB (0..1)
+    map_color      = { r = 170, g = 65, b = 225 },     -- 小地图颜色 RGB (0..255)
+    language       = { en = "Purple Ore", zh = "紫色矿石" }, -- 小地图图例名称
+}
+
+-- 取运行时 TileID（支持查本 Mod 或其它 Mod）
+local id = mod.tile.runtime_id("purple_ore")
+local other = mod.tile.runtime_id("other.mod.pkg", "tile_name")
+
+-- 运行时修改双向图格融合
+mod.tile.set_merge("purple_ore", 1, true)
+```
+
+- 自定义 TileID 从原版 `TileID.Count` 之后分配；掉落物 `drop` 省略时，内核会自动关联 `createTile == runtime_id` 的自定义物品；
+- **渲染线程约束**：游戏光照计算可能运行在渲染工作线程上，为确保线程安全，`light` 只支持静态 `{ r, g, b }` 常量；
+- **`on_drop(x, y)`**：返回 `false` 表示阻止本次掉落；返回 `item_id_or_name[, stack]` 表示覆盖静态掉落；返回 `nil` 则回落到 `drop` 配置。
 
 ## `mod.buff`：自定义 Buff
 
