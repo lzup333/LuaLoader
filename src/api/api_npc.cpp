@@ -28,19 +28,6 @@ struct LuaNpcLoot {
     int chance_den = 1;
 };
 
-struct LuaNpcBestiary {
-    bool configured = false;
-    bool exclude = false;
-    terraria_npc_bestiary_kind_t kind = TERRARIA_NPC_BESTIARY_ENEMY;
-    int stars = 1;
-    bool quick_unlock = false;
-    std::vector<std::string> tags;
-    int banner_item_id = 0;
-    std::string banner_item_name;
-    int kills_to_banner = 50;
-    bool include_loot = true;
-};
-
 struct LuaNpcEntry {
     terraria_npc_handle_t npc; // 必须是首成员
     lua_mod_handle_t *owner;
@@ -51,7 +38,6 @@ struct LuaNpcEntry {
     int ai_ref;
     int on_death_ref;
     std::vector<LuaNpcLoot> loot;
-    LuaNpcBestiary bestiary;
     std::map<int, std::pair<std::string, std::string>> lang; // culture -> {name, bestiary}
     patch_handle_t f_pos;
     patch_handle_t f_width;
@@ -77,59 +63,6 @@ static bool g_npc_lang_hooked = false;
 /// 内核回调里的 handle 实际就是 LuaNpcEntry*。
 static LuaNpcEntry *npc_from_handle(terraria_npc_handle_t *h) {
     return reinterpret_cast<LuaNpcEntry *>(h);
-}
-
-static bool has_npc_flavor_text(const LuaNpcEntry *e) {
-    if (!e)
-        return false;
-    for (const auto &kv : e->lang) {
-        if (!kv.second.second.empty())
-            return true;
-    }
-    return false;
-}
-
-static void lua_npc_init_static(terraria_npc_handle_t *current) {
-    LuaNpcEntry *e = npc_from_handle(current);
-    if (!e || e->npc.runtime_id < 0)
-        return;
-
-    std::vector<const char *> tag_ptrs;
-    tag_ptrs.reserve(e->bestiary.tags.size());
-    for (const auto &t : e->bestiary.tags)
-        tag_ptrs.push_back(t.c_str());
-
-    std::vector<terraria_npc_loot_entry_t> drop_entries;
-    if (e->bestiary.include_loot && !e->loot.empty()) {
-        drop_entries.reserve(e->loot.size());
-        for (const auto &l : e->loot) {
-            terraria_npc_loot_entry_t d{};
-            d.item_id = l.item_id;
-            d.item_name = l.item_name.empty() ? nullptr : l.item_name.c_str();
-            d.chance_numerator = l.chance_num;
-            d.chance_denominator = l.chance_den;
-            d.min_stack = l.min_stack;
-            d.max_stack = l.max_stack;
-            drop_entries.push_back(d);
-        }
-    }
-
-    terraria_npc_bestiary_t cfg{};
-    cfg.exclude = e->bestiary.exclude;
-    cfg.kind = e->bestiary.kind;
-    cfg.stars = e->bestiary.stars;
-    cfg.quick_unlock = e->bestiary.quick_unlock;
-    cfg.has_flavor_text = has_npc_flavor_text(e);
-    cfg.tags = tag_ptrs.empty() ? nullptr : tag_ptrs.data();
-    cfg.tag_count = static_cast<int>(tag_ptrs.size());
-    cfg.drops = drop_entries.empty() ? nullptr : drop_entries.data();
-    cfg.drop_count = static_cast<int>(drop_entries.size());
-    cfg.banner_item_id = e->bestiary.banner_item_id;
-    cfg.banner_item_name =
-        e->bestiary.banner_item_name.empty() ? nullptr : e->bestiary.banner_item_name.c_str();
-    cfg.kills_to_banner = e->bestiary.kills_to_banner;
-
-    terraria_npc_manager_set_bestiary(e->npc.runtime_id, &cfg);
 }
 
 /// NPC.SetDefaults 回调：写入默认字段，并调用可选的 Lua defaults(npc)。
@@ -237,7 +170,7 @@ static void rebuild_npc_language_cache() {
     g_lua_npc_lang.clear();
     using EntryList = std::vector<std::pair<std::string, std::string>>;
     for (int c = 1; c <= 12; ++c) {
-        std::map<std::string, EntryList> names, bestiaries;
+        std::map<std::string, EntryList> names;
         for (LuaNpcEntry *e : g_lua_npcs) {
             const auto it = e->lang.find(c);
             if (it == e->lang.end())
@@ -245,10 +178,8 @@ static void rebuild_npc_language_cache() {
             const std::string mod = e->owner ? e->owner->mod_id : std::string("?");
             if (!it->second.first.empty())
                 names[mod].emplace_back(e->name, it->second.first);
-            if (!it->second.second.empty())
-                bestiaries[mod].emplace_back(e->name, it->second.second);
         }
-        if (names.empty() && bestiaries.empty())
+        if (names.empty())
             continue;
         std::string json = "{";
         bool first = true;
@@ -279,7 +210,6 @@ static void rebuild_npc_language_cache() {
             }
         };
         emit("npc_name", names);
-        emit("npc_bestiary", bestiaries);
         json += "}";
         g_lua_npc_lang[c] = std::move(json);
     }
@@ -303,27 +233,6 @@ void shutdown_npc_hooks() {
     if (terraria_language_manager_unregister_callback)
         terraria_language_manager_unregister_callback(lua_npc_language);
     g_npc_lang_hooked = false;
-}
-
-static terraria_npc_bestiary_kind_t parse_bestiary_kind(lua_State *L, int idx) {
-    if (lua_type(L, idx) == LUA_TNUMBER) {
-        const int v = static_cast<int>(lua_tointeger(L, idx));
-        if (v == TERRARIA_NPC_BESTIARY_CRITTER)
-            return TERRARIA_NPC_BESTIARY_CRITTER;
-        if (v == TERRARIA_NPC_BESTIARY_TOWN_NPC)
-            return TERRARIA_NPC_BESTIARY_TOWN_NPC;
-        return TERRARIA_NPC_BESTIARY_ENEMY;
-    }
-    if (lua_type(L, idx) == LUA_TSTRING) {
-        std::string s(lua_tostring(L, idx));
-        for (char &ch : s)
-            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        if (s == "critter" || s == "passive")
-            return TERRARIA_NPC_BESTIARY_CRITTER;
-        if (s == "town" || s == "town_npc" || s == "townnpc")
-            return TERRARIA_NPC_BESTIARY_TOWN_NPC;
-    }
-    return TERRARIA_NPC_BESTIARY_ENEMY;
 }
 
 static void read_npc_item_ref(lua_State *L, int idx, int *out_id, std::string *out_name) {
@@ -540,79 +449,11 @@ static int l_npc_register(lua_State *L) {
                             e->lang[culture].first = lua_tostring(L, -1);
                         lua_pop(L, 1);
 
-                        lua_getfield(L, -1, "bestiary");
-                        if (lua_type(L, -1) != LUA_TSTRING) {
-                            lua_pop(L, 1);
-                            lua_getfield(L, -1, "flavor");
-                        }
-                        if (lua_type(L, -1) != LUA_TSTRING) {
-                            lua_pop(L, 1);
-                            lua_getfield(L, -1, "description");
-                        }
-                        if (lua_type(L, -1) == LUA_TSTRING)
-                            e->lang[culture].second = lua_tostring(L, -1);
-                        lua_pop(L, 1);
                     }
                 }
             }
             lua_pop(L, 1);
         }
-    }
-    lua_pop(L, 1);
-
-    lua_getfield(L, 1, "bestiary");
-    if (lua_isboolean(L, -1)) {
-        e->bestiary.configured = true;
-        e->bestiary.exclude = (lua_toboolean(L, -1) == 0);
-    } else if (lua_istable(L, -1)) {
-        e->bestiary.configured = true;
-        lua_getfield(L, -1, "exclude");
-        if (lua_isboolean(L, -1))
-            e->bestiary.exclude = (lua_toboolean(L, -1) != 0);
-        lua_pop(L, 1);
-
-        lua_getfield(L, -1, "kind");
-        e->bestiary.kind = parse_bestiary_kind(L, -1);
-        lua_pop(L, 1);
-
-        lua_getfield(L, -1, "stars");
-        if (lua_isnumber(L, -1))
-            e->bestiary.stars = static_cast<int>(lua_tointeger(L, -1));
-        lua_pop(L, 1);
-
-        lua_getfield(L, -1, "quick_unlock");
-        if (lua_isboolean(L, -1))
-            e->bestiary.quick_unlock = (lua_toboolean(L, -1) != 0);
-        lua_pop(L, 1);
-
-        lua_getfield(L, -1, "include_loot");
-        if (lua_isboolean(L, -1))
-            e->bestiary.include_loot = (lua_toboolean(L, -1) != 0);
-        lua_pop(L, 1);
-
-        lua_getfield(L, -1, "kills_to_banner");
-        if (lua_isnumber(L, -1))
-            e->bestiary.kills_to_banner = static_cast<int>(lua_tointeger(L, -1));
-        lua_pop(L, 1);
-
-        lua_getfield(L, -1, "banner_item");
-        read_npc_item_ref(L, -1, &e->bestiary.banner_item_id, &e->bestiary.banner_item_name);
-        lua_pop(L, 1);
-
-        lua_getfield(L, -1, "tags");
-        if (lua_istable(L, -1)) {
-            const int tn = static_cast<int>(lua_rawlen(L, -1));
-            for (int i = 1; i <= tn; ++i) {
-                lua_rawgeti(L, -1, i);
-                if (lua_type(L, -1) == LUA_TSTRING) {
-                    const char *ts = lua_tostring(L, -1);
-                    if (ts && *ts)
-                        e->bestiary.tags.emplace_back(ts);
-                }
-                lua_pop(L, 1);
-            }
-        }
-        lua_pop(L, 1);
     }
     lua_pop(L, 1);
 
@@ -650,7 +491,7 @@ static int l_npc_register(lua_State *L) {
     e->npc.runtime_id = -1;
     e->npc.ai_after_vanilla = vanilla_ai;
     e->npc.npc_ops.early_init = nullptr;
-    e->npc.npc_ops.init_static = lua_npc_init_static;
+    e->npc.npc_ops.init_static = nullptr;
     e->npc.npc_ops.set_defaults = lua_npc_set_defaults;
     e->npc.npc_ops.ai = (e->ai_ref != LUA_NOREF) ? lua_npc_ai : nullptr;
     e->npc.npc_ops.get_texture = lua_npc_get_texture;
