@@ -47,12 +47,12 @@ set(LUALOADER_SOURCES
         src/gui/gui_images.cpp
         src/gui/gui_ime.cpp
         src/gui/gui_keyboard.cpp
-        src/util/pinyin.cpp
         src/util/image_decode.cpp
         includes/tefkernel/tef_api_imp.c
 )
 
 if(ANDROID)
+    list(APPEND LUALOADER_SOURCES src/util/pinyin.cpp)
     list(APPEND LUALOADER_SOURCES src/controls.cpp)
 else()
     list(APPEND LUALOADER_SOURCES src/keybind.cpp)

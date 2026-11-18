@@ -414,86 +414,17 @@ void render() {
             else
                 g_edit.active = false; // 2 = 取消：丢弃
         } else if (kbd::supported()) {
-            // PC：硬件键盘 -> 内置拼音输入法（单独按 Shift 切换中/英）
+            // PC：纯硬件键盘输入（不再内嵌拼音输入法）
             kbd::Event ev;
             kbd::poll(ev);
-            constexpr size_t kPageSize = 9;
-            auto refresh = [&]() {
-                g_edit.cands.clear();
-                g_edit.page = 0;
-                if (!g_edit.ime_on || g_edit.pinyin.empty())
-                    return;
-                for (auto &c : pinyin::query(g_edit.pinyin, kPageSize * 10))
-                    g_edit.cands.push_back(c.text);
-            };
-            auto commit = [&](const std::string &s) {
-                g_edit.buf += s;
-                g_edit.pinyin.clear();
-                g_edit.cands.clear();
-                g_edit.page = 0;
-            };
-            if (ev.toggle_ime) {
-                g_edit.ime_on = !g_edit.ime_on;
-                g_edit.pinyin.clear();
-                g_edit.cands.clear();
-                g_edit.page = 0;
-                LOG_INFO("[ime] 中/英: {}", g_edit.ime_on ? "中" : "英");
-            }
             if (!ev.ime.empty())
                 g_edit.buf += ev.ime;
-            bool pinyin_dirty = false;
-            const bool paging = g_edit.ime_on && !g_edit.pinyin.empty();
-            for (char ch : ev.append) {
-                if (paging && (ch == '-' || ch == '_')) { // 上一页
-                    if (g_edit.page > 0)
-                        --g_edit.page;
-                    continue;
-                }
-                if (paging && (ch == '=' || ch == '+')) { // 下一页
-                    if ((g_edit.page + 1) * kPageSize < g_edit.cands.size())
-                        ++g_edit.page;
-                    continue;
-                }
-                if (g_edit.ime_on && ch >= 'a' && ch <= 'z') {
-                    g_edit.pinyin.push_back(ch);
-                    pinyin_dirty = true;
-                } else if (g_edit.ime_on && ch >= 'A' && ch <= 'Z') {
-                    g_edit.pinyin.push_back(static_cast<char>(ch - 'A' + 'a'));
-                    pinyin_dirty = true;
-                } else if (g_edit.ime_on && ch >= '1' && ch <= '9' && !g_edit.cands.empty()) {
-                    const size_t idx = g_edit.page * kPageSize + static_cast<size_t>(ch - '1');
-                    if (idx < g_edit.cands.size())
-                        commit(g_edit.cands[idx]);
-                } else if (g_edit.ime_on && ch == ' ' && !g_edit.pinyin.empty()) {
-                    commit(g_edit.cands.empty() ? g_edit.pinyin : g_edit.cands[0]);
-                } else {
-                    g_edit.buf.push_back(ch);
-                }
-            }
-            if (ev.backspace) {
-                if (g_edit.ime_on && !g_edit.pinyin.empty()) {
-                    g_edit.pinyin.pop_back();
-                    pinyin_dirty = true;
-                } else {
-                    utf8_pop_back(g_edit.buf); // 按整个字符删（修中文删两下）
-                }
-            }
-            if (pinyin_dirty)
-                refresh();
-            if (ev.enter) {
-                if (g_edit.ime_on && !g_edit.pinyin.empty())
-                    commit(g_edit.cands.empty() ? g_edit.pinyin : g_edit.cands[0]);
-                else
-                    g_edit.active = false;
-            }
-            if (ev.escape) {
-                if (!g_edit.pinyin.empty()) {
-                    g_edit.pinyin.clear();
-                    g_edit.cands.clear();
-                    g_edit.page = 0;
-                } else
-                    g_edit.active = false;
-            }
+            for (char ch : ev.append)
+                g_edit.buf.push_back(ch);
+            if (ev.backspace)
+                utf8_pop_back(g_edit.buf);
+            if (ev.enter || ev.escape)
+                g_edit.active = false;
         } else {
             // 兜底：自绘虚拟键盘
             g_cmds.clear();
@@ -504,13 +435,6 @@ void render() {
         }
         if (!g_edit.active) {
             kbd::reset();
-        }
-        if (g_edit.active && !g_edit.pinyin.empty()) {
-            g_cmds.clear();
-            g_recording = true;
-            draw_ime_bar();
-            g_recording = false;
-            flush_cmds();
         }
     }
     if (!g_mouse_down)

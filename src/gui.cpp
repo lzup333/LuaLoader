@@ -44,7 +44,6 @@
 #include "gui_keyboard_bounds.hpp"
 #include "gui_ime.hpp"
 #include "gui_keyboard.hpp"
-#include "pinyin.hpp"
 
 #include <cctype>
 #include <algorithm>
