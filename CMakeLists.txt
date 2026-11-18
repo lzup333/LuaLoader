@@ -52,7 +52,6 @@ set(LUALOADER_SOURCES
 )
 
 if(ANDROID)
-    list(APPEND LUALOADER_SOURCES src/util/pinyin.cpp)
     list(APPEND LUALOADER_SOURCES src/controls.cpp)
 else()
     list(APPEND LUALOADER_SOURCES src/keybind.cpp)

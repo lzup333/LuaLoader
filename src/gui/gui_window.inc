@@ -282,11 +282,6 @@ struct EditState {
     std::string owner;
     std::string buf;
     bool shift{false};
-    // 内置拼音输入法（PC：硬件键盘打拼音 -> 候选栏选词）
-    std::string pinyin;             // 当前拼音串（小写字母）
-    std::vector<std::string> cands; // 当前候选（最多 90，按页展示）
-    bool ime_on{true};              // 中/英（Shift 单击切换）
-    size_t page{0};                 // 候选翻页
 };
 
 EditState g_edit;
@@ -625,78 +620,6 @@ void draw_key(const float x, const float y, const float w, const float h, const 
         consumed = true;
     }
     draw_key_box(x, y, w, h, label, hovered);
-}
-
-/// 拼音输入法候选栏（PC：底部居中，数字键/点击选词，-/= 翻页）
-/// 输入框上方的 IME 候选栏。
-void draw_ime_bar() {
-    if (g_edit.pinyin.empty())
-        return;
-    constexpr size_t kPageSize = 9;
-    const float h = 30.0f * g_scale;
-    const float gap = 6.0f * g_scale;
-    const float pad = 8.0f * g_scale;
-    const size_t first = g_edit.page * kPageSize;
-    const size_t last = std::min<size_t>(g_edit.cands.size(), first + kPageSize);
-    const bool has_prev = g_edit.page > 0;
-    const bool has_more = last < g_edit.cands.size();
-
-    // 依次排布：模式 / ◀ / 候选… / 无候选 / ▶
-    float total = 0.0f;
-    auto chip_w = [&](const std::string &s) { return text_width(s.c_str()) + 16.0f * g_scale; };
-    std::vector<std::string> labels;
-    labels.push_back(g_edit.ime_on ? "中" : "英");
-    if (has_prev)
-        labels.push_back("◀");
-    for (size_t i = first; i < last; ++i)
-        labels.push_back(std::to_string(i - first + 1) + "." + g_edit.cands[i]);
-    if (g_edit.cands.empty())
-        labels.push_back("无候选");
-    if (has_more)
-        labels.push_back("▶");
-    for (auto &s : labels)
-        total += chip_w(s) + gap;
-    total -= gap;
-
-    float x = (g_screen_w - total) * 0.5f;
-    const float y = g_screen_h - h - 12.0f * g_scale;
-    draw_rect(x - pad, y - pad, total + 2 * pad, h + 2 * pad, kPanel);
-
-    auto chip = [&](const std::string &label, const char *id) -> bool {
-        const float w = chip_w(label);
-        const bool hover = mouse_in(x, y, w, h);
-        if (hover)
-            g_hover_gui = true;
-        const bool clicked = widget_click(id, x, y, hover);
-        draw_rect(x, y, w, h, hover ? kBtnHover : kBtn);
-        draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, label.c_str(), kText, 1.0f);
-        x += w + gap;
-        return clicked;
-    };
-
-    chip(g_edit.ime_on ? "中" : "英", "ime-mode");
-    if (has_prev && chip("◀", "ime-prev")) {
-        if (g_edit.page > 0)
-            --g_edit.page;
-        return;
-    }
-    for (size_t i = first; i < last; ++i) {
-        const std::string label = std::to_string(i - first + 1) + "." + g_edit.cands[i];
-        const std::string id = "ime-cand" + std::to_string(i - first);
-        if (chip(label, id.c_str())) {
-            g_edit.buf += g_edit.cands[i];
-            g_edit.pinyin.clear();
-            g_edit.cands.clear();
-            g_edit.page = 0;
-            return;
-        }
-    }
-    if (g_edit.cands.empty())
-        chip("无候选", "ime-none");
-    if (has_more && chip("▶", "ime-next")) {
-        ++g_edit.page;
-        return;
-    }
 }
 
 /// 屏幕虚拟键盘（没有物理键盘/IME 时的兜底）。

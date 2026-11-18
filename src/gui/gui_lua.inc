@@ -456,7 +456,7 @@ int l_gui_input_text(lua_State *L) {
     }
 
     const std::string shown =
-        editing ? (g_edit.buf + g_edit.pinyin + "|") : std::string(value[0] ? value : "(tap to edit)");
+        editing ? (g_edit.buf + "|") : std::string(value[0] ? value : "(tap to edit)");
     draw_rect(x, y, w, h, editing ? kBtnActive : (hovered ? kBtnHover : kBtn));
     draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, shown.c_str(), kText, 1.0f);
 
