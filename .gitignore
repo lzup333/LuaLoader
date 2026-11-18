@@ -26,8 +26,10 @@ tests/
 # 内核库（打包用，不入库）
 libtefkernel.*.so
 
+# 临时/测试文件
 *__pycache__*
-
 *testmods*
 
+# IDE
 .idea
+.vscode
