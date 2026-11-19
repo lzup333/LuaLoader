@@ -1,5 +1,7 @@
 #include "api_internal.hpp"
 
+#include <cstring>
+
 namespace lualoader::lua_api {
 
 // ========================================================================
@@ -11,6 +13,7 @@ namespace lualoader::lua_api {
 //     tooltip   = true,                    -- 是否显示简介
 //     sacrifice = 1,                       -- 研究所需数量（0 = 不可研究）
 //     defaults  = { damage=25, useTime=20, ... },   -- 或 function(item) end
+//                 -- defaults.shoot 可写弹幕名（字符串），运行时解析 runtime_id
 //     can_use   = function(player, item, ignore) return true end,
 //     language  = { en = {name=,tooltip=}, zh = {...} },
 //     recipe    = { result=1, materials={{id=9,count=10}}, station=18 },
@@ -38,6 +41,8 @@ struct LuaItemEntry {
     int recipe_station;
     std::map<int, std::pair<std::string, std::string>> lang;
     patch_handle_t use_sound; // SoundID.ItemN 的 LegacySoundStyle 对象
+    std::string deferred_shoot_name; // defaults.shoot 写成弹幕名时，SetDefaults 阶段解析
+    patch_handle_t f_shoot;          // Item.shoot 字段（延迟解析用）
     std::string equip_slot;   // back / front / neck / ...
     std::string equip_texture_path;
     std::vector<unsigned char> equip_pixels;
@@ -149,6 +154,21 @@ static void lua_item_set_defaults(terraria_item_handle_t *current, const patch_h
     for (const auto &d : e->defaults)
         if (patchlib_is_valid(d.field))
             item_field_write(d.field, inst, d.type, &d.value);
+    if (!e->deferred_shoot_name.empty()) {
+        if (!patchlib_is_valid(e->f_shoot)) {
+            patch_handle_t cls = patchlib_type_get_type("Terraria", "Item");
+            if (patchlib_is_valid(cls)) {
+                e->f_shoot = patchlib_type_get_field(cls, "shoot");
+                patchlib_free(cls);
+            }
+        }
+        if (patchlib_is_valid(e->f_shoot)) {
+            const int id = find_projectile_runtime_id(
+                e->owner, e->deferred_shoot_name);
+            const int value = id >= 0 ? id : 0;
+            item_field_write(e->f_shoot, inst, PATCH_INT32, &value);
+        }
+    }
     if (e->defaults_ref != LUA_NOREF && call_ctx_alive(e->L, e->owner)) {
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->defaults_ref);
@@ -496,6 +516,7 @@ static int l_item_register(lua_State *L) {
     e->L = L;
     e->name = item_name;
     e->defaults_ref = LUA_NOREF;
+    e->f_shoot = PATCH_NULL;
     e->can_use_ref = LUA_NOREF;
     e->use_ref = LUA_NOREF;
     e->use_sound = PATCH_NULL;
@@ -578,6 +599,14 @@ static int l_item_register(lua_State *L) {
                 while (lua_next(L, -2)) {
                     if (lua_type(L, -2) == LUA_TSTRING) {
                         const char *fname = lua_tostring(L, -2);
+                        // shoot 允许写弹幕名：注册阶段 runtime_id 还没分配，
+                        // 真正写入推迟到 SetDefaults。
+                        if (strcmp(fname, "shoot") == 0 &&
+                            lua_type(L, -1) == LUA_TSTRING) {
+                            e->deferred_shoot_name = lua_tostring(L, -1);
+                            lua_pop(L, 1);
+                            continue;
+                        }
                         const patch_handle_t f = patchlib_type_get_field(item_class, fname);
                         if (patchlib_is_valid(f)) {
                             const patch_type_t t = patchlib_field_get_type(f);
@@ -842,6 +871,7 @@ static int l_item_register(lua_State *L) {
         if (e->use_ref != LUA_NOREF)
             luaL_unref(L, LUA_REGISTRYINDEX, e->use_ref);
         unref_default_values(L, e->defaults);
+        if (patchlib_is_valid(e->f_shoot)) patchlib_free(e->f_shoot);
         if (patchlib_is_valid(e->use_sound))
             patchlib_free(e->use_sound);
         delete e;
@@ -916,6 +946,7 @@ void unregister_items(lua_mod_handle_t *handle) {
             if (e->use_ref != LUA_NOREF)
                 luaL_unref(handle->L, LUA_REGISTRYINDEX, e->use_ref);
             unref_default_values(handle->L, e->defaults);
+            if (patchlib_is_valid(e->f_shoot)) patchlib_free(e->f_shoot);
         }
         if (patchlib_is_valid(e->use_sound))
             patchlib_free(e->use_sound);

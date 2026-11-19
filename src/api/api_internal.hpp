@@ -123,6 +123,9 @@ void item_field_write(patch_handle_t field, patch_handle_t inst, patch_type_t ty
 void premultiply_alpha(unsigned char *buf, size_t sz);
 std::string resolve_item_image(const std::string &private_dir, const std::string &mod_dir, const std::string &rel);
 int find_item_runtime_id(const lua_mod_handle_t *owner, const std::string &name);
+
+/// 按 Mod + 名称查已分配的弹幕 runtime_id；未就绪返回 -1。
+int find_projectile_runtime_id(const lua_mod_handle_t *owner, const std::string &name);
 int culture_from_lang_key(const char *key);
 std::string json_escape_str(const std::string &in);
 patch_handle_t create_texture_asset_from_png(const std::string &path, std::vector<unsigned char> &pixels,

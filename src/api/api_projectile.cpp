@@ -363,19 +363,22 @@ static int l_projectile_register(lua_State *L) {
 }
 
 /// mod.projectile.runtime_id(name) -> int | nil
+int find_projectile_runtime_id(const lua_mod_handle_t *owner, const std::string &name) {
+    for (LuaProjectileEntry *e : g_lua_projectiles) {
+        if (e->owner == owner && e->name == name && e->projectile.runtime_id >= 0)
+            return e->projectile.runtime_id;
+    }
+    return -1;
+}
+
 static int l_projectile_runtime_id(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
     lua_mod_handle_t *handle = get_handle(L);
-    for (LuaProjectileEntry *e : g_lua_projectiles) {
-        if (e->owner == handle && e->name == name) {
-            if (e->projectile.runtime_id >= 0)
-                lua_pushinteger(L, e->projectile.runtime_id);
-            else
-                lua_pushnil(L);
-            return 1;
-        }
-    }
-    lua_pushnil(L);
+    const int id = find_projectile_runtime_id(handle, name);
+    if (id >= 0)
+        lua_pushinteger(L, id);
+    else
+        lua_pushnil(L);
     return 1;
 }
 
