@@ -1,6 +1,8 @@
 #include "api_internal.hpp"
 
 #include <atomic>
+#include <unordered_map>
+#include <new>
 
 namespace lualoader::lua_api {
 
@@ -8,10 +10,10 @@ namespace lualoader::lua_api {
 // Patchlib: 钩子（Prefix / Postfix）
 // ========================================================================
 
-/// 一个钩子槽位。全局固定数组，槽位可复用；generation 用来防止
-/// “旧 userdata 在槽位复用后误删新钩子”。
+/// 一个钩子槽位。动态分配，id 单调递增，因此没有固定上限。
+/// generation 用来防止“旧 userdata 在槽位释放后误删新钩子”。
 struct HookSlot {
-    bool used{false};
+    int id{0};
     uint64_t generation{0};
     lua_State *L{nullptr};
     lua_mod_handle_t *handle{nullptr}; ///< 所属 Mod，卸载时据此清理
@@ -22,51 +24,26 @@ struct HookSlot {
     patch_hook_id_t hook_id{PATCH_HOOK_INVALID_ID}; ///< 内核返回的钩子 id
 };
 
-/// 全加载器共享的钩子槽位（上限 MAX_HOOK_SLOTS）。
-static HookSlot g_hook_slots[MAX_HOOK_SLOTS];
+/// id -> 槽位。槽位指针直接作为 userdata 交给内核回调，分发路径无需查表。
+static std::unordered_map<int, HookSlot *> g_hook_slots;
+static int g_next_slot_id = 1;
+static uint64_t g_hook_generation = 0;
+
 /// 诊断：当前正在派发的 hook 槽位/阶段，供 Lua panic 时定位
 std::atomic<int> g_active_hook_slot{-1};
 std::atomic<int> g_active_hook_phase{0}; // 1=prefix 2=postfix
-static uint64_t g_hook_generation = 0;
 
 struct HookUserdata {
     int slot;
     uint64_t generation;
 };
 
-/// 钩子回调：先声明分发函数，再由宏生成固定签名的 C 入口
-static bool hook_prefix_dispatch(int slot, patch_handle_t instance, void **args, const patch_method_signature_t *sig,
-                                 void *result);
+/// 钩子回调：内核把安装时传入的 user（即 HookSlot*）原样回传。
+static bool hook_prefix_dispatch(void *user, patch_handle_t instance, void **args,
+                                 const patch_method_signature_t *sig, void *result);
 
-static void hook_postfix_dispatch(int slot, patch_handle_t instance, void **args, void *result,
+static void hook_postfix_dispatch(void *user, patch_handle_t instance, void **args, void *result,
                                   const patch_method_signature_t *sig);
-
-/// 跳板：按槽位号生成固定签名的 C 入口（用模板展开，数量随 MAX_HOOK_SLOTS 走）
-template <int N>
-static bool prefix_trampoline(patch_handle_t instance, void **args, const patch_method_signature_t *sig, void *result) {
-    return hook_prefix_dispatch(N, instance, args, sig, result);
-}
-
-template <int N>
-static void postfix_trampoline(patch_handle_t instance, void **args, void *result,
-                               const patch_method_signature_t *sig) {
-    hook_postfix_dispatch(N, instance, args, result, sig);
-}
-
-template <int... Is>
-static std::array<prefix_callback_t, sizeof...(Is)> make_prefix_table(std::integer_sequence<int, Is...>) {
-    return {&prefix_trampoline<Is>...};
-}
-
-template <int... Is>
-static std::array<postfix_callback_t, sizeof...(Is)> make_postfix_table(std::integer_sequence<int, Is...>) {
-    return {&postfix_trampoline<Is>...};
-}
-
-static const std::array<prefix_callback_t, MAX_HOOK_SLOTS> g_prefix_table =
-    make_prefix_table(std::make_integer_sequence<int, MAX_HOOK_SLOTS>{});
-static const std::array<postfix_callback_t, MAX_HOOK_SLOTS> g_postfix_table =
-    make_postfix_table(std::make_integer_sequence<int, MAX_HOOK_SLOTS>{});
 
 /// 压入一个参数值；copy_handles 时把托管对象句柄复制为 GC 托管句柄（原生指针只借用，不托管）
 static void push_hook_arg_value(lua_State *L, const patch_type_t type, const void *value, const bool copy_handles) {
@@ -113,24 +90,22 @@ static void push_hook_args(lua_State *L, patch_handle_t instance, void **args, c
 ///
 /// 返回 true 时调用方跳过原方法。任何 Lua 错误/非法返回值都退化为“不跳过”，
 /// 避免因为脚本错误把游戏方法整个吞掉。
-static bool hook_prefix_dispatch(const int slot, patch_handle_t instance, void **args,
+static bool hook_prefix_dispatch(void *user, patch_handle_t instance, void **args,
                                  const patch_method_signature_t *sig, void *result) {
-    if (slot < 0 || slot >= MAX_HOOK_SLOTS)
-        return false;
-    HookSlot &s = g_hook_slots[slot];
-    if (!s.used || !s.L || s.prefix_ref == LUA_NOREF)
+    HookSlot *s = static_cast<HookSlot *>(user);
+    if (!s || !s->L || s->prefix_ref == LUA_NOREF)
         return false;
 
-    lua_State *L = s.L;
+    lua_State *L = s->L;
     // 诊断信息：panic 时能知道是哪个槽位、哪个阶段出错。
-    g_active_hook_slot.store(slot, std::memory_order_relaxed);
+    g_active_hook_slot.store(s->id, std::memory_order_relaxed);
     g_active_hook_phase.store(1, std::memory_order_relaxed);
     const int base = lua_gettop(L);
-    lua_rawgeti(L, LUA_REGISTRYINDEX, s.prefix_ref);
-    push_hook_args(L, instance, args, sig, s.copy_handles);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, s->prefix_ref);
+    push_hook_args(L, instance, args, sig, s->copy_handles);
     // 第三个参数：当前返回值（void 方法传 nil）。
     if (result && sig && sig->return_type != PATCH_VOID) {
-        push_hook_arg_value(L, sig->return_type, result, s.copy_handles);
+        push_hook_arg_value(L, sig->return_type, result, s->copy_handles);
     } else {
         lua_pushnil(L);
     }
@@ -161,28 +136,26 @@ static bool hook_prefix_dispatch(const int slot, patch_handle_t instance, void *
 ///
 /// Lua 回调签名：function(instance, args, result)
 /// 默认忽略返回值；只有 { override_result = true } 时才读取第三个返回值覆盖 result。
-static void hook_postfix_dispatch(const int slot, patch_handle_t instance, void **args, void *result,
+static void hook_postfix_dispatch(void *user, patch_handle_t instance, void **args, void *result,
                                   const patch_method_signature_t *sig) {
-    if (slot < 0 || slot >= MAX_HOOK_SLOTS)
-        return;
-    HookSlot &s = g_hook_slots[slot];
-    if (!s.used || !s.L || s.postfix_ref == LUA_NOREF)
+    HookSlot *s = static_cast<HookSlot *>(user);
+    if (!s || !s->L || s->postfix_ref == LUA_NOREF)
         return;
 
-    lua_State *L = s.L;
-    g_active_hook_slot.store(slot, std::memory_order_relaxed);
+    lua_State *L = s->L;
+    g_active_hook_slot.store(s->id, std::memory_order_relaxed);
     g_active_hook_phase.store(2, std::memory_order_relaxed);
     const int base = lua_gettop(L);
-    lua_rawgeti(L, LUA_REGISTRYINDEX, s.postfix_ref);
-    push_hook_args(L, instance, args, sig, s.copy_handles);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, s->postfix_ref);
+    push_hook_args(L, instance, args, sig, s->copy_handles);
     if (result && sig && sig->return_type != PATCH_VOID) {
-        push_hook_arg_value(L, sig->return_type, result, s.copy_handles);
+        push_hook_arg_value(L, sig->return_type, result, s->copy_handles);
     } else {
         lua_pushnil(L);
     }
 
     // 默认忽略 postfix 返回值（兼容旧 Mod）；仅在 opt-in 时用返回值覆盖原方法返回值
-    if (s.override_result) {
+    if (s->override_result) {
         if (pcall_log(L, 3, 1, "postfix hook") == LUA_OK) {
             if (result && sig && sig->return_type != PATCH_VOID && !lua_isnil(L, -1)) {
                 if (!try_read_patch_value(L, -1, sig->return_type, result)) {
@@ -198,47 +171,51 @@ static void hook_postfix_dispatch(const int slot, patch_handle_t instance, void 
     g_active_hook_phase.store(0, std::memory_order_relaxed);
 }
 
-/// 释放槽位：卸载内核钩子、解除 Lua 引用、从 Mod 的 hook_slots 中移除，然后清空槽位。
-/// 可重复调用（未使用的槽位直接返回）。
-void release_slot(const int slot) {
-    if (slot < 0 || slot >= MAX_HOOK_SLOTS)
-        return;
-    HookSlot &s = g_hook_slots[slot];
-    if (!s.used)
+/// 释放槽位：卸载内核钩子、解除 Lua 引用、从 Mod 的 hook_slots 中移除，然后释放槽位。
+/// 可重复调用（不存在的 id 直接返回）。
+void release_slot(const int id) {
+    auto it = g_hook_slots.find(id);
+    if (it == g_hook_slots.end())
         return;
 
-    if (s.hook_id != PATCH_HOOK_INVALID_ID) {
-        patchlib_uninstall_hook(s.hook_id);
+    HookSlot *s = it->second;
+    if (s->hook_id != PATCH_HOOK_INVALID_ID) {
+        patchlib_uninstall_hook(s->hook_id);
     }
-    if (s.L) {
-        if (s.prefix_ref != LUA_NOREF)
-            luaL_unref(s.L, LUA_REGISTRYINDEX, s.prefix_ref);
-        if (s.postfix_ref != LUA_NOREF)
-            luaL_unref(s.L, LUA_REGISTRYINDEX, s.postfix_ref);
+    if (s->L) {
+        if (s->prefix_ref != LUA_NOREF)
+            luaL_unref(s->L, LUA_REGISTRYINDEX, s->prefix_ref);
+        if (s->postfix_ref != LUA_NOREF)
+            luaL_unref(s->L, LUA_REGISTRYINDEX, s->postfix_ref);
     }
-    if (s.handle) {
-        auto &slots = s.handle->hook_slots;
-        for (auto it = slots.begin(); it != slots.end(); ++it) {
-            if (*it == slot) {
-                slots.erase(it);
+    if (s->handle) {
+        auto &slots = s->handle->hook_slots;
+        for (auto slot_it = slots.begin(); slot_it != slots.end(); ++slot_it) {
+            if (*slot_it == id) {
+                slots.erase(slot_it);
                 break;
             }
         }
     }
-    s = HookSlot{};
+
+    g_hook_slots.erase(it);
+    delete s;
 }
 
-/// 分配一个空闲槽位；返回 -1 表示已满。
+/// 分配一个槽位；id 单调递增，实际只受 int 范围限制。
 /// 每次分配都递增 generation，供 l_hook_remove 判断 userdata 是否过期。
-static int alloc_slot() {
-    for (int i = 0; i < MAX_HOOK_SLOTS; ++i) {
-        if (!g_hook_slots[i].used) {
-            g_hook_slots[i].used = true;
-            g_hook_slots[i].generation = ++g_hook_generation;
-            return i;
-        }
-    }
-    return -1;
+static HookSlot *alloc_slot() {
+    if (g_next_slot_id <= 0)
+        g_next_slot_id = 1;
+
+    auto *s = new (std::nothrow) HookSlot();
+    if (!s)
+        return nullptr;
+
+    s->id = g_next_slot_id++;
+    s->generation = ++g_hook_generation;
+    g_hook_slots.emplace(s->id, s);
+    return s;
 }
 
 /// 读取 table[key]；若是函数就转成注册表引用，否则返回 LUA_NOREF。
@@ -266,17 +243,25 @@ static int l_patch_install_hook(lua_State *L) {
         return luaL_error(L, "invalid method handle");
     luaL_checktype(L, 2, LUA_TTABLE);
 
-    const int slot = alloc_slot();
-    if (slot < 0)
-        return luaL_error(L, "no free hook slots (max %d)", MAX_HOOK_SLOTS);
+    // 旧内核没有注册 patchlib_install_prepost_hook_ex，直接调用会空指针崩溃。
+    if (!patchlib_install_prepost_hook_ex) {
+        return luaL_error(
+            L,
+            "this kernel does not support patchlib_install_prepost_hook_ex; "
+            "please update TEFKernel");
+    }
 
-    HookSlot &s = g_hook_slots[slot];
-    s.L = L;
-    s.handle = get_handle(L);
-    s.prefix_ref = ref_function_field(L, 2, "prefix");
-    s.postfix_ref = ref_function_field(L, 2, "postfix");
+    HookSlot *s = alloc_slot();
+    if (!s)
+        return luaL_error(L, "failed to allocate hook slot");
+
+    const int slot_id = s->id;
+    s->L = L;
+    s->handle = get_handle(L);
+    s->prefix_ref = ref_function_field(L, 2, "prefix");
+    s->postfix_ref = ref_function_field(L, 2, "postfix");
     lua_getfield(L, 2, "copy");
-    s.copy_handles = lua_toboolean(L, -1) != 0;
+    s->copy_handles = lua_toboolean(L, -1) != 0;
     lua_pop(L, 1);
 
     // 显式 opt-in 才允许 postfix 返回值覆盖原方法返回值（默认关闭，保证旧 Mod 兼容）
@@ -285,45 +270,44 @@ static int l_patch_install_hook(lua_State *L) {
         lua_pop(L, 1);
         lua_getfield(L, 2, "result");
     }
-    s.override_result = lua_toboolean(L, -1) != 0;
+    s->override_result = lua_toboolean(L, -1) != 0;
     lua_pop(L, 1);
 
-    if (s.prefix_ref == LUA_NOREF && s.postfix_ref == LUA_NOREF) {
-        s = HookSlot{};
+    if (s->prefix_ref == LUA_NOREF && s->postfix_ref == LUA_NOREF) {
+        release_slot(slot_id);
         return luaL_error(L, "hook must define a 'prefix' and/or 'postfix' function");
     }
 
-    const prefix_callback_t prefix = s.prefix_ref != LUA_NOREF ? g_prefix_table[slot] : nullptr;
-    const postfix_callback_t postfix = s.postfix_ref != LUA_NOREF ? g_postfix_table[slot] : nullptr;
-    s.hook_id = patchlib_install_prepost_hook(method, prefix, postfix);
+    // 同一个分发函数服务所有钩子；内核通过 user 把槽位指针原样传回来。
+    s->hook_id = patchlib_install_prepost_hook_ex(
+        method,
+        s->prefix_ref != LUA_NOREF ? hook_prefix_dispatch : nullptr,
+        s->postfix_ref != LUA_NOREF ? hook_postfix_dispatch : nullptr,
+        s);
 
-    if (s.hook_id == PATCH_HOOK_INVALID_ID) {
-        if (s.prefix_ref != LUA_NOREF)
-            luaL_unref(L, LUA_REGISTRYINDEX, s.prefix_ref);
-        if (s.postfix_ref != LUA_NOREF)
-            luaL_unref(L, LUA_REGISTRYINDEX, s.postfix_ref);
-        s = HookSlot{};
+    if (s->hook_id == PATCH_HOOK_INVALID_ID) {
+        release_slot(slot_id);
         return luaL_error(L, "failed to install hook");
     }
 
-    if (s.handle)
-        s.handle->hook_slots.push_back(slot);
+    if (s->handle)
+        s->handle->hook_slots.push_back(slot_id);
 
     auto *ud = static_cast<HookUserdata *>(lua_newuserdatauv(L, sizeof(HookUserdata), 0));
-    ud->slot = slot;
-    ud->generation = s.generation;
+    ud->slot = slot_id;
+    ud->generation = s->generation;
     luaL_getmetatable(L, HOOK_METATABLE);
     lua_setmetatable(L, -2);
     return 1;
 }
 
 /// hook:remove()
-/// 用 generation 校验：如果槽位已被复用，旧 userdata 不能误删新钩子。
+/// 用 generation 校验：如果槽位已被释放，旧 userdata 不能误删新钩子。
 int l_hook_remove(lua_State *L) {
     auto *ud = static_cast<HookUserdata *>(luaL_checkudata(L, 1, HOOK_METATABLE));
     if (ud->slot >= 0) {
-        // A removed hook's Lua userdata may survive after its slot is reused.
-        if (ud->slot < MAX_HOOK_SLOTS && g_hook_slots[ud->slot].generation == ud->generation) {
+        auto it = g_hook_slots.find(ud->slot);
+        if (it != g_hook_slots.end() && it->second->generation == ud->generation) {
             release_slot(ud->slot);
         }
         ud->slot = -1;

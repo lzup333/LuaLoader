@@ -348,7 +348,7 @@ hook:remove()
 ```
 
 - `args` 是 1 起始的参数数组；静态方法 `instance` 为 `nil`；`prefix`/`postfix` 至少一个。
-- 最多 1024 个钩子；装上后到 `remove()` 或 Mod 卸载前一直有效。
+- 钩子数量不设固定上限（按需动态分配）；装上后到 `remove()` 或 Mod 卸载前一直有效。
 
 一个真实例子：每次玩家 `ResetEffects` 后把魔力补满（postfix，不被原版覆盖）：
 

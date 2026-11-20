@@ -63,7 +63,6 @@ namespace lualoader::lua_api {
 static constexpr const char *HANDLE_KEY = "lualoader.mod.handle";
 static constexpr const char *HOOK_METATABLE = "LuaLoader.Hook";
 static constexpr const char *OWNED_HANDLE_MT = "LuaLoader.OwnedHandle";
-static constexpr int MAX_HOOK_SLOTS = 1024;
 static constexpr int MAX_CALL_ARGS = 16;
 static constexpr const char *LUALOADER_PKG_ID = "lzup333.lualoader";
 
