@@ -272,6 +272,15 @@ endif()
 
 add_library(libffi ${FFI_SOURCES})
 
+if(ANDROID)
+    # Android（bionic）堆不可执行。closures.c 在未定义 FFI_MMAP_EXEC_WRIT 时
+    # 会走 "malloc 出来的内存可执行" 的兜底分支，ffi_closure_alloc 返回的
+    # *code 就是堆地址；内核 Hook 分发器一调用就跳进 scudo 堆。
+    # 这里启用 libffi 自带的 mmap/dlmalloc 路径：先试 RWX 匿名映射
+    # （和 ShadowHook 分配跳板的方式相同），失败再退到临时可执行文件。
+    target_compile_definitions(libffi PRIVATE FFI_MMAP_EXEC_WRIT=1)
+endif()
+
 install(TARGETS libffi
     EXPORT ${PROJECT_NAME}Targets
     RUNTIME DESTINATION lib
