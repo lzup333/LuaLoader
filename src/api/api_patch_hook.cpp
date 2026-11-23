@@ -245,20 +245,25 @@ void release_slot(const int id) {
     if (s->hook_id != PATCH_HOOK_INVALID_ID) {
         patchlib_uninstall_hook(s->hook_id);
     }
-    if (s->prefix_closure) {
-        ffi_closure_free(s->prefix_closure);
-        s->prefix_closure = nullptr;
-    }
-    if (s->postfix_closure) {
-        ffi_closure_free(s->postfix_closure);
-        s->postfix_closure = nullptr;
-    }
+
+    /* 不要 free ffi_closure，也不要 delete HookSlot。
+     *
+     * 旧实现用的是静态模板跳板，永远不会释放，所以“卸载时内核还残留一个
+     * hook 节点”也不会崩。换成 libffi 后如果立刻 ffi_closure_free，而
+     * 内核因为 uninstall 失败/重入仍然调用这个入口，就会直接跳进已释放
+     * 的 mmap 区域（PC == fault address，且不在任何模块里）。
+     *
+     * 这里把 closure 和槽位都保留到进程退出；Lua 引用解除后把 ref 置为
+     * NOREF、L 置空，残留回调最多安全地空转，不会 use-after-free。 */
     if (s->L) {
         if (s->prefix_ref != LUA_NOREF)
             luaL_unref(s->L, LUA_REGISTRYINDEX, s->prefix_ref);
         if (s->postfix_ref != LUA_NOREF)
             luaL_unref(s->L, LUA_REGISTRYINDEX, s->postfix_ref);
     }
+    s->prefix_ref = LUA_NOREF;
+    s->postfix_ref = LUA_NOREF;
+    s->L = nullptr;
     if (s->handle) {
         auto &slots = s->handle->hook_slots;
         for (auto slot_it = slots.begin(); slot_it != slots.end(); ++slot_it) {
@@ -270,7 +275,7 @@ void release_slot(const int id) {
     }
 
     g_hook_slots.erase(it);
-    delete s;
+    /* 故意不 delete s：残留 hook 的 closure user_data 仍指向它。 */
 }
 
 /// 分配一个槽位；id 单调递增，实际只受 int 范围限制。
