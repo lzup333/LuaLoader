@@ -20,6 +20,7 @@ endif ()
 # Vendored dependencies
 add_subdirectory(lib/spdlog-1.17.0)
 add_subdirectory(lib/lua-5.5.1)
+add_subdirectory(lib/libffi)
 
 # 原生 GUI：直接使用游戏自带的 XNA/Unity SpriteBatch 绘制，不再依赖 Dear ImGui。
 set(LUALOADER_SOURCES
@@ -64,10 +65,14 @@ target_include_directories(LuaLoader
         includes
         includes/tefkernel
 )
+target_include_directories(LuaLoader PRIVATE
+        lib/libffi/include
+        ${CMAKE_CURRENT_BINARY_DIR}/lib/libffi/include)
 
 target_link_libraries(LuaLoader
         spdlog::spdlog
         lua
+        libffi
 )
 
 # 原生 GUI 默认编译进 Loader（无需额外开关）

@@ -4,6 +4,8 @@
 #include <unordered_map>
 #include <new>
 
+#include <ffi.h>
+
 namespace lualoader::lua_api {
 
 // ========================================================================
@@ -22,6 +24,11 @@ struct HookSlot {
     bool copy_handles{false};          ///< true 时把 instance/对象参数/返回值复制为 GC 托管句柄
     bool override_result{false};       ///< true 时允许 postfix 返回值覆盖原方法返回值（默认关闭，保证兼容）
     patch_hook_id_t hook_id{PATCH_HOOK_INVALID_ID}; ///< 内核返回的钩子 id
+
+    /* 每个钩子用自己的 libffi closure 当跳板：closure 的 user_data 就是
+     * HookSlot*，所以一个分发函数可以服务任意数量的钩子，没有 1024 上限。 */
+    ffi_closure *prefix_closure{nullptr};
+    ffi_closure *postfix_closure{nullptr};
 };
 
 /// id -> 槽位。槽位指针直接作为 userdata 交给内核回调，分发路径无需查表。
@@ -171,6 +178,62 @@ static void hook_postfix_dispatch(void *user, patch_handle_t instance, void **ar
     g_active_hook_phase.store(0, std::memory_order_relaxed);
 }
 
+// ------------------------------------------------------------------------
+// libffi 跳板：内核的普通 prepost hook 没有 user 参数，这里给每个钩子
+// 生成一个 closure，把 HookSlot* 作为 closure 的 user_data 带进去。
+// ------------------------------------------------------------------------
+namespace {
+    ffi_cif g_prefix_cif;
+    ffi_cif g_postfix_cif;
+    ffi_type *g_closure_arg_types[4] = {
+        &ffi_type_pointer, &ffi_type_pointer, &ffi_type_pointer, &ffi_type_pointer
+    };
+    bool g_closure_cifs_ready = false;
+
+    void ensure_closure_cifs() {
+        if (g_closure_cifs_ready) return;
+        g_closure_cifs_ready = true;
+        if (ffi_prep_cif(&g_prefix_cif, FFI_DEFAULT_ABI, 4, &ffi_type_uint8,
+                         g_closure_arg_types) != FFI_OK)
+            LOG_ERROR("[hook] ffi_prep_cif(prefix) failed");
+        if (ffi_prep_cif(&g_postfix_cif, FFI_DEFAULT_ABI, 4, &ffi_type_void,
+                         g_closure_arg_types) != FFI_OK)
+            LOG_ERROR("[hook] ffi_prep_cif(postfix) failed");
+    }
+
+    void prefix_closure_handler(ffi_cif *, void *ret, void **args, void *user) {
+        const auto instance = *static_cast<patch_handle_t *>(args[0]);
+        auto method_args = *static_cast<void ***>(args[1]);
+        const auto sig = *static_cast<const patch_method_signature_t **>(args[2]);
+        void *result = *static_cast<void **>(args[3]);
+        const bool skip = hook_prefix_dispatch(user, instance, method_args, sig, result);
+        *static_cast<uint8_t *>(ret) = skip ? 1 : 0;
+    }
+
+    void postfix_closure_handler(ffi_cif *, void *, void **args, void *user) {
+        const auto instance = *static_cast<patch_handle_t *>(args[0]);
+        auto method_args = *static_cast<void ***>(args[1]);
+        void *result = *static_cast<void **>(args[2]);
+        const auto sig = *static_cast<const patch_method_signature_t **>(args[3]);
+        hook_postfix_dispatch(user, instance, method_args, result, sig);
+    }
+
+    bool make_closure(ffi_cif *cif, void (*fn)(ffi_cif *, void *, void **, void *),
+                      void *user, ffi_closure **out_closure, void **out_code) {
+        void *code = nullptr;
+        ffi_closure *closure = static_cast<ffi_closure *>(
+                ffi_closure_alloc(sizeof(ffi_closure), &code));
+        if (!closure) return false;
+        if (ffi_prep_closure_loc(closure, cif, fn, user, code) != FFI_OK) {
+            ffi_closure_free(closure);
+            return false;
+        }
+        *out_closure = closure;
+        *out_code = code;
+        return true;
+    }
+} // namespace
+
 /// 释放槽位：卸载内核钩子、解除 Lua 引用、从 Mod 的 hook_slots 中移除，然后释放槽位。
 /// 可重复调用（不存在的 id 直接返回）。
 void release_slot(const int id) {
@@ -181,6 +244,14 @@ void release_slot(const int id) {
     HookSlot *s = it->second;
     if (s->hook_id != PATCH_HOOK_INVALID_ID) {
         patchlib_uninstall_hook(s->hook_id);
+    }
+    if (s->prefix_closure) {
+        ffi_closure_free(s->prefix_closure);
+        s->prefix_closure = nullptr;
+    }
+    if (s->postfix_closure) {
+        ffi_closure_free(s->postfix_closure);
+        s->postfix_closure = nullptr;
     }
     if (s->L) {
         if (s->prefix_ref != LUA_NOREF)
@@ -243,14 +314,6 @@ static int l_patch_install_hook(lua_State *L) {
         return luaL_error(L, "invalid method handle");
     luaL_checktype(L, 2, LUA_TTABLE);
 
-    // 旧内核没有注册 patchlib_install_prepost_hook_ex，直接调用会空指针崩溃。
-    if (!patchlib_install_prepost_hook_ex) {
-        return luaL_error(
-            L,
-            "this kernel does not support patchlib_install_prepost_hook_ex; "
-            "please update TEFKernel");
-    }
-
     HookSlot *s = alloc_slot();
     if (!s)
         return luaL_error(L, "failed to allocate hook slot");
@@ -278,12 +341,29 @@ static int l_patch_install_hook(lua_State *L) {
         return luaL_error(L, "hook must define a 'prefix' and/or 'postfix' function");
     }
 
-    // 同一个分发函数服务所有钩子；内核通过 user 把槽位指针原样传回来。
-    s->hook_id = patchlib_install_prepost_hook_ex(
+    // 每个钩子一个 libffi closure，把 HookSlot* 带进普通 prepost hook。
+    ensure_closure_cifs();
+    void *prefix_code = nullptr;
+    void *postfix_code = nullptr;
+    if (s->prefix_ref != LUA_NOREF) {
+        if (!make_closure(&g_prefix_cif, prefix_closure_handler, s,
+                          &s->prefix_closure, &prefix_code)) {
+            release_slot(slot_id);
+            return luaL_error(L, "failed to create prefix hook trampoline");
+        }
+    }
+    if (s->postfix_ref != LUA_NOREF) {
+        if (!make_closure(&g_postfix_cif, postfix_closure_handler, s,
+                          &s->postfix_closure, &postfix_code)) {
+            release_slot(slot_id);
+            return luaL_error(L, "failed to create postfix hook trampoline");
+        }
+    }
+
+    s->hook_id = patchlib_install_prepost_hook(
         method,
-        s->prefix_ref != LUA_NOREF ? hook_prefix_dispatch : nullptr,
-        s->postfix_ref != LUA_NOREF ? hook_postfix_dispatch : nullptr,
-        s);
+        s->prefix_closure ? reinterpret_cast<prefix_callback_t>(prefix_code) : nullptr,
+        s->postfix_closure ? reinterpret_cast<postfix_callback_t>(postfix_code) : nullptr);
 
     if (s->hook_id == PATCH_HOOK_INVALID_ID) {
         release_slot(slot_id);
