@@ -352,7 +352,7 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 /// 返回加载器自身的元信息（版本号需与 Info.json 保持一致）。
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
-        "lzup333.lualoader", 46, "3.1.0", 1, 0, nullptr,
+        "lzup333.lualoader", 55, "3.1.8.1", 1, 0, nullptr,
     };
     return &info;
 }

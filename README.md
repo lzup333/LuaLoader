@@ -16,6 +16,19 @@ patchlib 能力封装成一张 `mod` 表交给脚本。
 - 📖 完整 API 参考：[`doc/api.md`](doc/api.md)
 - 🎨 图形界面：[`doc/gui.md`](doc/gui.md)
 
+## 版本号规则
+
+LuaLoader 使用 `主.次.修.补` 四段版本号：
+
+| 段位 | 含义 |
+|---|---|
+| 第一位 | 重大兼容性更新 |
+| 第二位 | 普通功能性更新 |
+| 第三位 | 一般 bug 修复 |
+| 第四位 | 轻微故障 / 轻微修复 / 适配升级 |
+
+> 当前版本：**3.1.8.1**
+
 > 💡 **写内容型 Mod 推荐配合 [LuaModQuickAPI](https://github.com/lzup333/LuaModQuickAPI) 使用。**
 > 它在 LuaLoader 的 `mod.patch` / `mod.item` / `mod.projectile` / `mod.buff` / `mod.npc` 之上，
 > 提供字段代理、注册简写、AI/位移辅助和五章内容开发指南（合成 / 物品 / 弹幕 / Buff / NPC），
