@@ -618,7 +618,13 @@ static int l_item_register(lua_State *L) {
                             }
                         } else {
                             patchlib_free(f);
-                            LOG_WARN("[mod.item] {}: 找不到 Item 字段 {}", item_name, fname);
+                            // 1.4.6 移除了 Item.width / height；旧 Mod 的 defaults
+                            // 不应因此注册失败/刷“字段拼错”的日志。
+                            if (!strcmp(fname, "width") || !strcmp(fname, "height"))
+                                LOG_WARN("[mod.item] {}: 1.4.6 起 Item.{} 已移除，该设置将被忽略",
+                                         item_name, fname);
+                            else
+                                LOG_WARN("[mod.item] {}: 找不到 Item 字段 {}", item_name, fname);
                         }
                     }
                     lua_pop(L, 1);

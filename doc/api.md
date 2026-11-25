@@ -42,9 +42,9 @@ todo_list = { "setup" }   -- 启动时按顺序执行清单里的函数
   "description": "更完整的描述。",
   "features": [],
   "sizeCategory": "TINY",
-  "targetGameVersion": "1.4.5.8",
+  "targetGameVersion": "1.4.6",
   "minGameVersion": "1.4.5.8",
-  "maxGameVersion": "1.4.5.8",
+  "maxGameVersion": "1.4.6",
   "support": {
     "android": { "arm64": true,  "arm": true,  "x64": false, "x86": false },
     "windows": { "arm64": false, "arm": false, "x64": true,  "x86": true  },
@@ -392,15 +392,19 @@ mod.item.register{
     tooltip = true,                -- 显示简介
     sacrifice = 1,                 -- 研究所需数量；0 不可研究
     defaults = { damage = 25, useTime = 20, useStyle = 1, autoReuse = true,
-                 width = 40, height = 40, melee = true, rare = 2, maxStack = 1 },
+                 melee = true, rare = 2, maxStack = 1 },
     can_use = function(player, item, ignore_cursed) return true end,
     use_sound = "Item1",           -- Item.UseSound = SoundID.Item1；写 SoundID 字段名
     language = { en = { name = "Test Sword", tooltip = "..." },
                  zh = { name = "测试之剑", tooltip = "..." } },
     recipe  = { result = 1, materials = { { id = 9, count = 10 } }, station = 18 },
+
     animation = { ticks = 8, frames = 9 },   -- 竖向帧图；texture 高度须被 frames 整除
 }
 ```
+
+> **1.4.6 注意**：`Item.width` / `Item.height` 已被原版移除；写进 `defaults` 会被忽略并打印警告。
+> `Projectile` / `NPC` / `TileObjectData` 的 width/height 不受影响。
 
 - `defaults` 字段名与 `Terraria.Item` 一致；值类型不符会打日志忽略。函数形式 `function(item) end`（非托管句柄）。
 - **只写 `use` 回调不会让物品自动可用**：必须同时给合法的 `useStyle` / `useTime` / `useAnimation`（建议再加 `autoReuse`）；否则游戏不会进入使用流程，`use` 永远不触发。消耗品再加 `consumable = true`。
