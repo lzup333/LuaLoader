@@ -23,6 +23,7 @@
 #   -f, --fingerprint HEX  tefpkg 指纹（默认 0x114514）
 #       --kernel-lib PATH  打包用的 libtefkernel*.so（不扫盘；也可设 TEFKERNEL_LIB）
 #       --no-zip           打包 tefpkg 但不生成发行 zip
+#       --allow-partial    某些平台构建失败/产物缺失时仍继续打包（默认中止）
 #   -n, --dry-run          只打印将执行的命令
 #   -h, --help             显示本帮助
 #
@@ -58,7 +59,7 @@ ALL_PLATFORMS="linux-x64 linux-x86 win-x64 win-x86 android-arm64 android-arm"
 PLATFORMS=()
 BT=Release
 CLEAN=0; JOBS="$(nproc 2>/dev/null || echo 4)"
-GUI=0; PACKAGE=0; PACKAGE_ONLY=0; NO_ZIP=0; DRY=0
+GUI=0; PACKAGE=0; PACKAGE_ONLY=0; NO_ZIP=0; DRY=0; ALLOW_PARTIAL=0
 FP=0x114514
 KERNEL_LIB="${TEFKERNEL_LIB:-}"
 
@@ -76,6 +77,7 @@ while [ $# -gt 0 ]; do
     -f|--fingerprint) FP="$2"; shift 2 ;;
     --kernel-lib)   KERNEL_LIB="$2"; shift 2 ;;
     --no-zip)     NO_ZIP=1; shift ;;
+    --allow-partial) ALLOW_PARTIAL=1; shift ;;
     -n|--dry-run) DRY=1; shift ;;
     -h|--help)    usage; exit 0 ;;
     all)          PLATFORMS+=($ALL_PLATFORMS); shift ;;
@@ -185,6 +187,10 @@ package() {
       warn "缺少 $dir/$art（该平台在包内将留空占位）"; missing=1
     fi
   done
+  if [ "$missing" = 1 ] && [ "$ALLOW_PARTIAL" != 1 ]; then
+    err "包内缺少平台产物，已中止打包。加 --allow-partial 可强制生成带空占位的包。"
+    return 1
+  fi
   run python3 "$tool" build "$stage" "$tefpkg" "$FP" -c "$ROOT/tools/compress_loader.json" || return 1
 
   [ "$NO_ZIP" = 1 ] && { info "已生成 $tefpkg（--no-zip，跳过发行 zip）"; return 0; }
@@ -211,6 +217,10 @@ if [ "$PACKAGE_ONLY" != 1 ]; then
   done
   if [ ${#FAILED[@]} -gt 0 ]; then
     err "以下平台构建失败：${FAILED[*]}"
+    if [ "$ALLOW_PARTIAL" != 1 ]; then
+      err "已中止：默认不允许带缺失平台打包。确需继续请加 --allow-partial。"
+      exit 1
+    fi
   fi
 fi
 

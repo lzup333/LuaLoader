@@ -27,7 +27,7 @@ LuaLoader 使用 `主.次.修.补` 四段版本号：
 | 第三位 | 一般 bug 修复 |
 | 第四位 | 轻微故障 / 轻微修复 / 适配升级 |
 
-> 当前版本：**3.1.8.1**
+> 当前版本：**3.1.8.2**
 
 > 💡 **写内容型 Mod 推荐配合 [LuaModQuickAPI](https://github.com/lzup333/LuaModQuickAPI) 使用。**
 > 它在 LuaLoader 的 `mod.patch` / `mod.item` / `mod.projectile` / `mod.buff` / `mod.npc` 之上，
@@ -122,6 +122,9 @@ export ANDROID_NDK_HOME=~/Android/Sdk/ndk/28.0.13004108
 export TEFKERNEL_LIB=./libtefkernel.linux.x86_64.so
 ./build.sh -r --package
 ```
+
+> 默认要求选中的平台全部构建成功；任一平台失败或产物缺失会**中止打包**并返回非 0。
+> 确实需要生成“缺失平台留空占位”的包时，再加 `--allow-partial`。
 
 ## 需要原生代码？
 
