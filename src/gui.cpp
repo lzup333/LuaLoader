@@ -198,6 +198,9 @@ void install() {
     // 预解析绘制接口
     resolve_gfx();
     g_installed = true;
+#if defined(__ANDROID__)
+    LOG_INFO("[gui] PE legacy draw path (identity matrix, no UIScaleMatrix)");
+#endif
     LOG_INFO("[gui] native GUI enabled (render hook id={})", static_cast<int>(g_draw_hook));
 }
 

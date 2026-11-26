@@ -254,8 +254,10 @@ void resolve_gfx() {
 
         g_gfx.a_screen_w = resolve_accessor(g_gfx.t_main, "screenWidth");
         g_gfx.a_screen_h = resolve_accessor(g_gfx.t_main, "screenHeight");
+#if !defined(__ANDROID__)
         g_gfx.a_ui_scale_matrix = resolve_accessor(g_gfx.t_main, "UIScaleMatrix");
         g_gfx.a_ui_scale = resolve_accessor(g_gfx.t_main, "UIScale");
+#endif
         g_gfx.a_mouse_x = resolve_accessor(g_gfx.t_main, "mouseX");
         g_gfx.a_mouse_y = resolve_accessor(g_gfx.t_main, "mouseY");
         g_gfx.a_mouse_left = resolve_accessor(g_gfx.t_main, "mouseLeft");
