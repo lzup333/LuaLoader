@@ -17,8 +17,6 @@ bool g_in_render = false;
 int g_render_layer = 1;          // 0 = HUD 下方, 1 = HUD 上方
 unsigned g_frame_token = 0;      // Main.Update 每帧自增
 unsigned g_input_token = ~0u;    // 最近一次采样输入所属帧
-bool g_need_cursor_redraw = false; // 本帧在 HUD 上方画过窗口
-patch_handle_t g_m_draw_cursor = nullptr;
 #if defined(__ANDROID__)
 patch_hook_id_t g_layer_hook = PATCH_HOOK_INVALID_ID;
 patch_hook_id_t g_cursor_list_hook = PATCH_HOOK_INVALID_ID;
@@ -198,7 +196,6 @@ void ensure_input_frame() {
     if (g_input_token == g_frame_token)
         return;
     g_input_token = g_frame_token;
-    g_need_cursor_redraw = false;
     update_screen_size();
     update_input();
     images::begin_frame();
@@ -324,8 +321,6 @@ void render_named_layer(const int layer) {
         g_active_named = nullptr;
         g_render_owner.clear();
     }
-    if (!list.empty())
-        g_need_cursor_redraw = true;
     sb_end();
     g_sb = nullptr;
     g_style_window = nullptr;
@@ -596,12 +591,6 @@ void render() {
     std::sort(windows.begin(), windows.end(),
               [](auto *a, auto *b) { return g_windows[a->mod_id].order < g_windows[b->mod_id].order; });
     for (auto *h : windows) {
-        if (g_windows[h->mod_id].visible) {
-            g_need_cursor_redraw = true;
-            break;
-        }
-    }
-    for (auto *h : windows) {
         if (!grouped_icon(h->mod_id))
             draw_mod_gui(h);
         g_render_owner.clear();
@@ -728,41 +717,41 @@ void render_guarded() {
     }
 }
 
-/// 把原版鼠标指针补画到 Mod 窗口之上（PC / PE OTG 共用 Main.DrawCursor）。
-/// 否则窗口在 Main.Draw 之后绘制会把指针盖住。
-void redraw_game_cursor() {
-    if (!g_need_cursor_redraw)
-        return;
-    if (!g_m_draw_cursor) {
-        patch_handle_t main_t = patchlib_type_get_type("Terraria", "Main");
-        if (main_t && patchlib_is_valid(main_t)) {
-            g_m_draw_cursor = patchlib_type_get_method_by_param_count(main_t, "DrawCursor", 2);
-            patchlib_free(main_t);
-        }
-    }
-    if (!g_m_draw_cursor || !patchlib_is_valid(g_m_draw_cursor))
-        return;
+/// HUD 上方窗口的绘制入口：挂在 DrawInterface_36_Cursor **之前**。
+/// 原版随后用 UIScaleMatrix / SamplerStateForCursor 自己画指针，
+/// 因此窗口永远压在指针下面，且不会出现两套鼠标样式/缩放。
+///
+/// 此时前一个 HUD 层还开着 SpriteBatch，不能再 Begin/End 自己的批次：
+/// 置 g_batch_borrowed 借用当前批次（UI 缩放、采样状态与原版一致）。
+bool cursor_frame_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
+    if (!g_installed || g_in_render)
+        return false;
+    if (g_update_hook == PATCH_HOOK_INVALID_ID)
+        ++g_frame_token;
+    g_render_layer = 1;
+    resolve_gfx();
+    if (!g_gfx.usable)
+        return false;
 
-    patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
-    if (!sb || !patchlib_is_valid(sb))
-        return;
-    g_sb = sb;
-    sb_begin();
-    Vec2 zero{0.0f, 0.0f};
-    bool smart = false;
-    void *args[2] = {&zero, &smart};
-    patchlib_method_invoke_args(g_m_draw_cursor, PATCH_NULL, nullptr, args);
-    sb_end();
-    g_sb = nullptr;
-    patchlib_free(sb);
+    struct BorrowGuard {
+        ~BorrowGuard() {
+            g_batch_borrowed = false;
+            g_sb = nullptr;
+        }
+    } guard;
+    g_batch_borrowed = true;
+    render_named_guarded(1);
+    render_guarded();
+    finalize_gui_frame();
+    return false;
 }
 
-/// Main.Draw 后置：每帧渲染入口（HUD 上方 + legacy 窗口）。
+/// Main.Draw 后置：仅在 Cursor 层钩子不可用时作为兜底绘制入口。
 void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
-    if (!g_installed || g_in_render)
+    if (!g_installed || g_in_render || g_cursor_hook != PATCH_HOOK_INVALID_ID)
         return;
     if (g_update_hook == PATCH_HOOK_INVALID_ID)
-        ++g_frame_token; // 没有 Update 钩子时，至少保证每帧采样一次
+        ++g_frame_token;
     g_render_layer = 1;
     resolve_gfx();
     if (!g_gfx.usable)
@@ -770,5 +759,4 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
     render_named_guarded(1);
     render_guarded();
     finalize_gui_frame();
-    redraw_game_cursor();
 }

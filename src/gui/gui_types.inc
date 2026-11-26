@@ -597,8 +597,10 @@ void draw_image(const std::string &id, float x, float y, float w, float h, const
 }
 
 /// 开始 SpriteBatch（使用单位矩阵，避免受游戏相机/缩放影响）。
+bool g_batch_borrowed = false;
+
 void sb_begin() {
-    if (!g_sb)
+    if (!g_sb || g_batch_borrowed)
         return;
 #if defined(__ANDROID__)
     // PE：强制使用单位矩阵，避免 GUI 跟随世界相机/视野缩放
@@ -657,7 +659,7 @@ void sb_begin() {
 
 /// 结束 SpriteBatch。
 void sb_end() {
-    if (!g_gfx.m_sb_end || !g_sb)
+    if (g_batch_borrowed || !g_gfx.m_sb_end || !g_sb)
         return;
     patchlib_method_invoke_args(g_gfx.m_sb_end, g_sb, nullptr, nullptr);
 }

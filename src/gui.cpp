@@ -136,6 +136,24 @@ void install() {
         patchlib_free(draw_interface);
     }
 
+    // HUD 上方窗口挪到原版画鼠标指针之前，借用同一批 SpriteBatch，
+    // 这样 UI 缩放、指针样式和原版完全一致，也不会出现两个指针。
+    {
+        patch_handle_t cursor_layer =
+            patchlib_type_get_method_by_param_count(main_type, "DrawInterface_36_Cursor", 0);
+        if (cursor_layer && patchlib_is_valid(cursor_layer)) {
+            g_cursor_hook =
+                patchlib_install_prepost_hook(cursor_layer, cursor_frame_prefix, nullptr);
+            if (g_cursor_hook == PATCH_HOOK_INVALID_ID)
+                LOG_WARN("[gui] failed to hook DrawInterface_36_Cursor; fallback to Main.Draw");
+            else
+                LOG_INFO("[gui] hud layer attached before cursor (id={})", static_cast<int>(g_cursor_hook));
+        } else {
+            LOG_WARN("[gui] DrawInterface_36_Cursor not found; fallback to Main.Draw");
+        }
+        patchlib_free(cursor_layer);
+    }
+
     // 输入屏蔽：在 Main.Update 之前判断是否悬停 GUI
     patch_handle_t update = patchlib_type_get_method_by_param_count(main_type, "Update", 1);
     if (!update || !patchlib_is_valid(update)) {
