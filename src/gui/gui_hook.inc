@@ -151,8 +151,14 @@ bool pointer_over_windows() {
 void update_after_input() {
     ++g_frame_token;
     resolve_gfx();
-    if (g_gfx.usable)
-        ensure_input_frame();
+    if (!g_gfx.usable)
+        return;
+    // 启动画面阶段不碰任何 GUI/输入状态（PE 上尤其不能提前调用输入相关接口）。
+    if (read_bool(g_gfx.a_show_splash, false))
+        return;
+#if !defined(__ANDROID__)
+    ensure_input_frame();
+#endif
 #if defined(__ANDROID__)
     void *cm_instance = g_gfx.f_cm_instance ? read_static_object(g_gfx.f_cm_instance) : nullptr;
     if (cm_instance && g_gfx.m_cm_get_num_cursors && g_gfx.m_cm_get_cursor && g_gfx.m_adjust_real_screen &&
@@ -811,11 +817,15 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
     resolve_gfx();
     if (!g_gfx.usable)
         return;
+    if (read_bool(g_gfx.a_show_splash, false))
+        return;
 
     begin_ui_zoom();
     render_named_guarded(1);
     render_guarded();
     finalize_gui_frame();
+#if !defined(__ANDROID__)
     redraw_game_cursor();
+#endif
     end_ui_zoom();
 }

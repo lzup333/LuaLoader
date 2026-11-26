@@ -641,6 +641,16 @@ void sb_begin() {
         NullableMat m{};
         m.has_value = 1;
         m.value = ui;
+#if defined(__ANDROID__)
+        // PE 的 Begin(8) 走 Unity 兼容层，直接按函数指针调用（旧的可用路径）。
+        using FnBegin8 = void (*)(void *self, int sort_mode, void *blend, void *sampler, void *depth, void *raster,
+                                  void *effect, NullableMat *xform, bool deferred);
+        auto fn = reinterpret_cast<FnBegin8>(patchlib_method_get_pointer(g_gfx.m_sb_begin8));
+        if (fn) {
+            fn(g_sb, 0, nullptr, nullptr, nullptr, nullptr, nullptr, &m, true);
+            return;
+        }
+#else
         int sort_mode = 0;
         patch_handle_t null_state = nullptr;
         unsigned char deferred = 1;
@@ -648,6 +658,7 @@ void sb_begin() {
                          &null_state, &null_state, &m,          &deferred};
         patchlib_method_invoke_args(g_gfx.m_sb_begin8, g_sb, nullptr, args);
         return;
+#endif
     }
 #if defined(__ANDROID__)
     // PE：强制使用单位矩阵，避免 GUI 跟随世界相机/视野缩放
