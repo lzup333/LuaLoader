@@ -107,8 +107,12 @@ int read_int(const Accessor &a, const int fallback = 0) {
 #endif
     }
     if (a.getter) {
+        // 返回缓冲区放大到 16 字节：PE 上个别属性/方法的返回 ABI 可能写 8 字节，
+        // 用 4 字节 int 接收会越过局部变量、破坏栈 canary。
+        alignas(16) unsigned char buf[16] = {0};
+        patchlib_method_invoke_args(a.getter, nullptr, buf, nullptr);
         int v = 0;
-        patchlib_method_invoke_args(a.getter, nullptr, &v, nullptr);
+        memcpy(&v, buf, sizeof(v));
         return v;
     }
     return fallback;
@@ -128,9 +132,9 @@ bool read_bool(const Accessor &a, const bool fallback = false) {
 #endif
     }
     if (a.getter) {
-        bool v = false;
-        patchlib_method_invoke_args(a.getter, nullptr, &v, nullptr);
-        return v;
+        alignas(16) unsigned char buf[16] = {0};
+        patchlib_method_invoke_args(a.getter, nullptr, buf, nullptr);
+        return buf[0] != 0;
     }
     return fallback;
 }
