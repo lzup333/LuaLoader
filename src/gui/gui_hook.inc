@@ -156,9 +156,7 @@ void update_after_input() {
         return;
     if (read_bool(g_gfx.a_show_splash, false))
         return;
-#if !defined(__ANDROID__)
     ensure_input_frame();
-#endif
 #if defined(__ANDROID__)
     void *cm_instance = g_gfx.f_cm_instance ? read_static_object(g_gfx.f_cm_instance) : nullptr;
     if (cm_instance && g_gfx.m_cm_get_num_cursors && g_gfx.m_cm_get_cursor && g_gfx.m_adjust_real_screen &&
@@ -193,17 +191,17 @@ void update_after_input() {
                         if (p)
                             *p = 1;
                     }
-                    write_bool(g_gfx.a_mouse_left, false);
-                    write_bool(g_gfx.a_mouse_right, false);
                 }
             }
         }
     }
 #endif
+#if !defined(__ANDROID__)
     if (pointer_over_windows()) {
         write_bool(g_gfx.a_mouse_left, false);
         write_bool(g_gfx.a_mouse_right, false);
     }
+#endif
 }
 
 /// 主路径：PlayerInput.UpdateInput 后置（PC/PE 都在 Main.Update 前段调用）。
@@ -402,6 +400,31 @@ void render_named_android_both() {
     g_sb = sb;
     sb_begin();
     for (int layer = 0; layer <= 1; ++layer) {
+        // 与本层窗口做命中归属，否则 mouse_in 会因 owner 不匹配拒绝所有控件。
+        g_input_owner.clear();
+        if (!g_pointer_owner.empty()) {
+            auto it = g_named_windows.find(g_pointer_owner);
+            if (it != g_named_windows.end() && it->second.layer == layer && it->second.ws.visible)
+                g_input_owner = g_pointer_owner;
+        }
+        if (g_input_owner.empty() && g_mouse_pressed) {
+            NamedWindow *top = nullptr;
+            for (auto &kv : g_named_windows) {
+                NamedWindow &nw = kv.second;
+                if (!nw.ws.visible || nw.layer != layer || !mod_alive(nw.mod_id))
+                    continue;
+                const float h = nw.ws.collapsed ? title_height() : nw.ws.h;
+                if (g_mouse_x >= nw.ws.x && g_mouse_x <= nw.ws.x + nw.ws.w && g_mouse_y >= nw.ws.y &&
+                    g_mouse_y <= nw.ws.y + h && (!top || nw.order >= top->order))
+                    top = &nw;
+            }
+            if (top) {
+                g_input_owner = top->key;
+                g_pointer_owner = top->key;
+                top->order = ++g_next_window_order;
+            }
+        }
+
         std::vector<NamedWindow *> list;
         for (auto &kv : g_named_windows) {
             NamedWindow &nw = kv.second;

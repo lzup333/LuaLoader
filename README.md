@@ -27,7 +27,7 @@ LuaLoader 使用 `主.次.修.补` 四段版本号：
 | 第三位 | 一般 bug 修复 |
 | 第四位 | 轻微故障 / 轻微修复 / 适配升级 |
 
-> 当前版本：**3.2.0.0**
+> 当前版本：**3.2.1.0**
 
 > 💡 **写内容型 Mod 推荐配合 [LuaModQuickAPI](https://github.com/lzup333/LuaModQuickAPI) 使用。**
 > 它在 LuaLoader 的 `mod.patch` / `mod.item` / `mod.projectile` / `mod.buff` / `mod.npc` 之上，
