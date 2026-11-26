@@ -24,6 +24,41 @@ struct WindowState {
 
 std::unordered_map<std::string, WindowState> g_windows;
 
+// --------------------------------------------------------------------
+// 多窗口（v2）：每个 Mod 可以注册任意多个具名窗口。
+//
+// 与旧版 g_windows（每个 Mod 一个、绑定 mod.on_gui）并存：
+//   - 旧窗口仍按 mod_id 索引，参与图标/文件夹/合并等桌面整理功能；
+//   - 具名窗口不参与文件夹，只显示标题栏和内容，但可以有独立的位置、
+//     尺寸、层级（HUD 上方 / 下方）、显示、隐藏和收起状态。
+// --------------------------------------------------------------------
+struct NamedWindow {
+    std::string key;       // mod_id + '\x1f' + id
+    std::string mod_id;
+    std::string id;
+    WindowState ws;
+    lua_State *L = nullptr;
+    int handle_ref = LUA_NOREF; // Lua 侧窗口句柄表
+    int draw_ref = LUA_NOREF;   // draw 回调
+    int layer = 1;              // 0 = HUD 下方, 1 = HUD 上方
+    int order = 0;
+    bool close_button = true;   // 标题栏右侧 X
+    bool destroyed = false;     // 延迟到帧末真正移除
+};
+std::unordered_map<std::string, NamedWindow> g_named_windows;
+NamedWindow *g_active_named = nullptr;
+
+std::string named_window_key(const std::string &mod_id, const std::string &id) {
+    return mod_id + "\x1f" + id;
+}
+
+bool mod_alive(const std::string &mod_id) {
+    for (const auto &kv : core::lua_mod_handles)
+        if (kv.second && kv.second->mod_id == mod_id)
+            return true;
+    return false;
+}
+
 struct IconFolder {
     std::string id;
     float x = 40, y = 40;
@@ -432,6 +467,15 @@ bool point_in_gui(const float x, const float y) {
         if (x >= ws.x && x <= ws.x + hit_w && y >= ws.y && y <= ws.y + body_h)
             return true;
     }
+    for (const auto &kv : g_named_windows) {
+        const WindowState &ws = kv.second.ws;
+        if (!ws.visible)
+            continue;
+        const float hit_w = ws.w;
+        const float body_h = ws.collapsed ? title_height() : ws.h;
+        if (x >= ws.x && x <= ws.x + hit_w && y >= ws.y && y <= ws.y + body_h)
+            return true;
+    }
     return false;
 }
 
@@ -574,6 +618,132 @@ void draw_mod_gui(lua_mod_handle_t *h) {
     while (!g_scroll_stack.empty())
         end_scroll();
     ws.initial_position = false;
+    g_recording = false;
+    g_current_mod.clear();
+    g_ctx = nullptr;
+    g_viewport = {};
+    if (ws.visible && !ws.collapsed)
+        flush_cmds();
+    else
+        g_cmds.clear();
+
+    const float content_h = ctx.cy + ctx.prev_h;
+    ws.h = th + p + content_h + p;
+}
+
+// ====================================================================
+// 多窗口绘制
+// ====================================================================
+
+void call_named_draw(NamedWindow &nw) {
+    if (!nw.L || nw.draw_ref == LUA_NOREF || nw.handle_ref == LUA_NOREF)
+        return;
+    lua_State *L = nw.L;
+    const int base = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, nw.draw_ref);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, nw.handle_ref);
+    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        LOG_ERROR("[gui] window '{}' draw failed: {}", nw.id, err ? err : "?");
+    }
+    lua_settop(L, base);
+}
+
+/// 单个具名窗口：标题栏 / 拖动 / 收起 / 关闭 / 内容回调。
+void draw_named_window(NamedWindow &nw) {
+    WindowState &ws = nw.ws;
+    if (!ws.visible)
+        return;
+
+    const float th = title_height();
+    const float p = pad();
+    const float min_x = -ws.w * 0.5f;
+    const float max_x = std::max(min_x, g_screen_w - ws.w * 0.5f);
+    const float max_y = std::max(0.0f, g_screen_h - th);
+    ws.x = std::max(min_x, std::min(ws.x, max_x));
+    ws.y = std::max(0.0f, std::min(ws.y, max_y));
+
+    g_style_window = &ws;
+    g_render_owner = nw.key;
+    g_active_named = &nw;
+
+    const float body_h = ws.collapsed ? th : ws.h;
+    if (!ws.skin_panel.empty()) {
+        draw_image(ws.skin_panel, ws.x, ws.y, ws.w, body_h, kWhite, 0, 0, 0, 0, ws.skin_border, ws.skin_edge);
+    } else {
+        draw_rect(ws.x - 2.0f, ws.y - 2.0f, ws.w + 4.0f, body_h + 4.0f, kBorder);
+        draw_rect(ws.x, ws.y, ws.w, body_h, kPanel);
+        draw_rect(ws.x, ws.y, ws.w, th, kTitle);
+    }
+
+    // 收起/展开按钮
+    const float a = th - 8.0f * g_scale;
+    const float ax = ws.x + 4.0f * g_scale;
+    const float ay = ws.y + (th - a) * 0.5f;
+    const bool arrow_hovered = mouse_in(ax, ay, a, a);
+    if (arrow_hovered)
+        g_hover_gui = true;
+    if (widget_click((nw.key + "#collapse").c_str(), ax, ay, arrow_hovered))
+        ws.collapsed = !ws.collapsed;
+    draw_rect(ax, ay, a, a, arrow_hovered ? kBtnHover : kBtn);
+    const char *arrow = ws.collapsed ? ">" : "v";
+    draw_string(ax + (a - text_width(arrow)) * 0.5f, ay + (a - line_height()) * 0.5f, arrow, kWhite, 1.0f);
+
+    // 关闭按钮
+    float close_w = 0.0f;
+    if (nw.close_button) {
+        const float ca = a;
+        const float cx = ws.x + ws.w - ca - 4.0f * g_scale;
+        const float cy = ay;
+        const bool close_hovered = mouse_in(cx, cy, ca, ca);
+        if (close_hovered)
+            g_hover_gui = true;
+        if (widget_click((nw.key + "#close").c_str(), cx, cy, close_hovered))
+            ws.visible = false;
+        draw_rect(cx, cy, ca, ca, close_hovered ? kBtnHover : kBtn);
+        draw_string(cx + (ca - text_width("x")) * 0.5f, cy + (ca - line_height()) * 0.5f, "x", kWhite, 1.0f);
+        close_w = ca + 4.0f * g_scale;
+    }
+
+    if (!ws.visible)
+        return;
+
+    // 标题
+    const char *title = ws.title.empty() ? nw.id.c_str() : ws.title.c_str();
+    draw_string(ax + a + item_gap(), ws.y + (th - line_height()) * 0.5f, title, kWhite, 1.0f);
+
+    // 标题栏拖动
+    const bool title_hovered =
+        mouse_in(ws.x, ws.y, ws.w - close_w, th) && !arrow_hovered;
+    if (title_hovered)
+        g_hover_gui = true;
+    if (title_hovered && g_mouse_pressed && g_drag_id.empty()) {
+        g_drag_id = nw.key;
+        g_drag_dx = g_mouse_x - ws.x;
+        g_drag_dy = g_mouse_y - ws.y;
+    }
+    if (!g_drag_id.empty() && g_drag_id == nw.key && g_mouse_down) {
+        ws.x = g_mouse_x - g_drag_dx;
+        ws.y = g_mouse_y - g_drag_dy;
+    }
+
+    if (ws.collapsed) {
+        ws.h = th;
+        return;
+    }
+
+    // 内容
+    Ctx ctx;
+    ctx.ox = ws.x + p;
+    ctx.oy = ws.y + th + p * 0.5f;
+    ctx.cw = ws.w - p * 2.0f;
+    g_ctx = &ctx;
+    g_current_mod = nw.key;
+    g_cmds.clear();
+    g_recording = true;
+    call_named_draw(nw);
+    while (!g_scroll_stack.empty())
+        end_scroll();
     g_recording = false;
     g_current_mod.clear();
     g_ctx = nullptr;

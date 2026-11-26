@@ -119,6 +119,23 @@ void install() {
         return;
     }
 
+    // HUD 下方那一层：在 DrawInterface 之前绘制，HUD 会盖在上面。
+    {
+        patch_handle_t draw_interface =
+            patchlib_type_get_method_by_param_count(main_type, "DrawInterface", 1);
+        if (draw_interface && patchlib_is_valid(draw_interface)) {
+            g_below_hook =
+                patchlib_install_prepost_hook(draw_interface, frame_below_prefix, nullptr);
+            if (g_below_hook == PATCH_HOOK_INVALID_ID)
+                LOG_WARN("[gui] failed to install DrawInterface hook; hud_below unavailable");
+            else
+                LOG_INFO("[gui] hud_below layer enabled (id={})", static_cast<int>(g_below_hook));
+        } else {
+            LOG_WARN("[gui] Main.DrawInterface not found; hud_below layer unavailable");
+        }
+        patchlib_free(draw_interface);
+    }
+
     // 输入屏蔽：在 Main.Update 之前判断是否悬停 GUI
     patch_handle_t update = patchlib_type_get_method_by_param_count(main_type, "Update", 1);
     if (!update || !patchlib_is_valid(update)) {
@@ -164,6 +181,10 @@ void shutdown() {
         patchlib_uninstall_hook(g_draw_hook);
         g_draw_hook = PATCH_HOOK_INVALID_ID;
     }
+    if (g_below_hook != PATCH_HOOK_INVALID_ID) {
+        patchlib_uninstall_hook(g_below_hook);
+        g_below_hook = PATCH_HOOK_INVALID_ID;
+    }
     if (g_update_hook != PATCH_HOOK_INVALID_ID) {
         patchlib_uninstall_hook(g_update_hook);
         g_update_hook = PATCH_HOOK_INVALID_ID;
@@ -206,6 +227,8 @@ void shutdown() {
     g_member_gestures.clear();
     g_position_applied.clear();
     g_windows.clear();
+    g_named_windows.clear();
+    g_active_named = nullptr;
     g_headers.clear();
     g_edit = EditState{};
     g_cmds.clear();

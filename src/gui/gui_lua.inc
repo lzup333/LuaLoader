@@ -16,6 +16,8 @@ lua_mod_handle_t *gui_owner(lua_State *L) {
 }
 
 const std::string &gui_mod_id(lua_State *L) {
+    if (g_active_named)
+        return g_active_named->key;
     lua_mod_handle_t *h = gui_owner(L);
     return h ? h->mod_id : g_current_mod;
 }
@@ -468,10 +470,35 @@ int l_gui_input_text(lua_State *L) {
 // 窗口定位 / 显示控制：允许 Mod 指定绘制位置、控制出现与消失
 // --------------------------------------------------------------------
 WindowState *current_window(lua_State *L) {
+    if (g_active_named)
+        return &g_active_named->ws;
     const std::string &id = gui_mod_id(L);
     if (id.empty())
         return nullptr;
     return &g_windows[id];
+}
+
+NamedWindow *named_window_by_key(const std::string &key) {
+    auto it = g_named_windows.find(key);
+    return it == g_named_windows.end() ? nullptr : &it->second;
+}
+
+NamedWindow *named_window_for(lua_State *L, const std::string &mod_id, const std::string &id) {
+    return named_window_by_key(named_window_key(mod_id, id));
+}
+
+/// 把窗口标记为隐藏，并结束残留的编辑/拖动。
+void hide_named_window(NamedWindow *nw) {
+    if (!nw)
+        return;
+    nw->ws.visible = false;
+    if (g_edit.active && g_edit.owner.rfind(nw->key + "#", 0) == 0) {
+        g_edit = EditState{};
+        ime::close();
+        kbd::reset();
+    }
+    if (g_drag_id == nw->key)
+        g_drag_id.clear();
 }
 
 /// 隐藏窗口时一并结束它正在进行的文本编辑/拖动，
@@ -565,7 +592,304 @@ int l_gui_is_visible(lua_State *L) {
 }
 
 /// mod.gui.show()
+/// 解析 named-window 参数：字符串 id / 窗口句柄表；无参数时取当前绘制窗口。
+NamedWindow *resolve_named_arg(lua_State *L, const int index) {
+    if (index <= 0 || index > lua_gettop(L) || lua_isnil(L, index)) {
+        return g_active_named;
+    }
+    if (lua_istable(L, index)) {
+        lua_getfield(L, index, "__window");
+        const char *key = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : nullptr;
+        NamedWindow *nw = key ? named_window_by_key(key) : nullptr;
+        lua_pop(L, 1);
+        return nw;
+    }
+    if (lua_isstring(L, index)) {
+        const char *id = lua_tostring(L, index);
+        lua_mod_handle_t *h = gui_owner(L);
+        const std::string mod = h ? h->mod_id : g_current_mod;
+        return mod.empty() ? nullptr : named_window_for(L, mod, id);
+    }
+    return nullptr;
+}
+
+/// 取窗口方法闭包 upvalue(2) 里的 key。
+NamedWindow *named_from_upvalue(lua_State *L) {
+    const char *key = lua_type(L, lua_upvalueindex(2)) == LUA_TSTRING
+                          ? lua_tostring(L, lua_upvalueindex(2))
+                          : nullptr;
+    return key ? named_window_by_key(key) : nullptr;
+}
+
+int l_gui_win_show(lua_State *L) {
+    if (NamedWindow *nw = named_from_upvalue(L))
+        nw->ws.visible = true;
+    return 0;
+}
+
+int l_gui_win_hide(lua_State *L) {
+    hide_named_window(named_from_upvalue(L));
+    return 0;
+}
+
+int l_gui_win_toggle(lua_State *L) {
+    if (NamedWindow *nw = named_from_upvalue(L)) {
+        if (nw->ws.visible)
+            hide_named_window(nw);
+        else
+            nw->ws.visible = true;
+    }
+    return 0;
+}
+
+int l_gui_win_is_visible(lua_State *L) {
+    NamedWindow *nw = named_from_upvalue(L);
+    lua_pushboolean(L, nw && nw->ws.visible);
+    return 1;
+}
+
+int l_gui_win_collapse(lua_State *L) {
+    if (NamedWindow *nw = named_from_upvalue(L))
+        nw->ws.collapsed = true;
+    return 0;
+}
+
+int l_gui_win_expand(lua_State *L) {
+    if (NamedWindow *nw = named_from_upvalue(L))
+        nw->ws.collapsed = false;
+    return 0;
+}
+
+int l_gui_win_toggle_collapsed(lua_State *L) {
+    if (NamedWindow *nw = named_from_upvalue(L))
+        nw->ws.collapsed = !nw->ws.collapsed;
+    return 0;
+}
+
+int l_gui_win_is_collapsed(lua_State *L) {
+    NamedWindow *nw = named_from_upvalue(L);
+    lua_pushboolean(L, nw && nw->ws.collapsed);
+    return 1;
+}
+
+int l_gui_win_set_title(lua_State *L) {
+    const int i = lua_istable(L, 1) ? 2 : 1;
+    const char *title = luaL_checkstring(L, i);
+    if (NamedWindow *nw = named_from_upvalue(L))
+        nw->ws.title = title;
+    return 0;
+}
+
+int l_gui_win_set_pos(lua_State *L) {
+    const int i = lua_istable(L, 1) ? 2 : 1;
+    const float x = static_cast<float>(luaL_checknumber(L, i));
+    const float y = static_cast<float>(luaL_checknumber(L, i + 1));
+    if (!std::isfinite(x) || !std::isfinite(y))
+        return luaL_error(L, "invalid window position");
+    if (NamedWindow *nw = named_from_upvalue(L)) {
+        nw->ws.x = x;
+        nw->ws.y = y;
+        nw->ws.initial_position = false;
+    }
+    return 0;
+}
+
+int l_gui_win_get_pos(lua_State *L) {
+    NamedWindow *nw = named_from_upvalue(L);
+    lua_pushnumber(L, nw ? nw->ws.x : 0.0);
+    lua_pushnumber(L, nw ? nw->ws.y : 0.0);
+    return 2;
+}
+
+int l_gui_win_set_size(lua_State *L) {
+    const int i = lua_istable(L, 1) ? 2 : 1;
+    const float w = static_cast<float>(luaL_checknumber(L, i));
+    const float h = static_cast<float>(luaL_optnumber(L, i + 1, -1));
+    if (NamedWindow *nw = named_from_upvalue(L)) {
+        if (w > 60.0f)
+            nw->ws.w = w;
+        if (h > 0.0f)
+            nw->ws.h = h;
+    }
+    return 0;
+}
+
+int l_gui_win_get_size(lua_State *L) {
+    NamedWindow *nw = named_from_upvalue(L);
+    lua_pushnumber(L, nw ? nw->ws.w : 0.0);
+    lua_pushnumber(L, nw ? nw->ws.h : 0.0);
+    return 2;
+}
+
+int l_gui_win_set_layer(lua_State *L) {
+    const int i = lua_istable(L, 1) ? 2 : 1;
+    const char *layer = luaL_checkstring(L, i);
+    int value = 1;
+    if (strcmp(layer, "hud_below") == 0 || strcmp(layer, "below") == 0)
+        value = 0;
+    else if (strcmp(layer, "hud") == 0 || strcmp(layer, "above") == 0)
+        value = 1;
+    else
+        return luaL_error(L, "layer must be 'hud' or 'hud_below'");
+    if (NamedWindow *nw = named_from_upvalue(L))
+        nw->layer = value;
+    return 0;
+}
+
+int l_gui_win_get_layer(lua_State *L) {
+    NamedWindow *nw = named_from_upvalue(L);
+    lua_pushstring(L, nw && nw->layer == 0 ? "hud_below" : "hud");
+    return 1;
+}
+
+int l_gui_win_destroy(lua_State *L) {
+    NamedWindow *nw = named_from_upvalue(L);
+    if (!nw)
+        return 0;
+    // 延迟到帧末删除：窗口的 draw 回调里可能直接 destroy 自己。
+    nw->destroyed = true;
+    nw->ws.visible = false;
+    if (g_pointer_owner == nw->key)
+        g_pointer_owner.clear();
+    if (g_drag_id == nw->key)
+        g_drag_id.clear();
+    return 0;
+}
+
+/// mod.gui.window{ id=, title=, x=, y=, w=, layer=, visible=, collapsed=, draw= }
+int l_gui_window(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_mod_handle_t *h = gui_owner(L);
+    const std::string mod = h ? h->mod_id : g_current_mod;
+    if (mod.empty())
+        return luaL_error(L, "mod.gui.window called outside a mod");
+
+    lua_getfield(L, 1, "id");
+    std::string id = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "main";
+    lua_pop(L, 1);
+    if (id.empty() || id.size() > 128)
+        return luaL_error(L, "invalid window id");
+
+    const std::string key = named_window_key(mod, id);
+    auto &nw = g_named_windows[key];
+    if (nw.key.empty()) {
+        nw.key = key;
+        nw.mod_id = mod;
+        nw.id = id;
+        nw.ws.title = id;
+        nw.ws.visible = true;
+        nw.order = ++g_next_window_order;
+    }
+    nw.L = L;
+
+    auto opt_number = [&](const char *name, float &out) {
+        lua_getfield(L, 1, name);
+        if (lua_isnumber(L, -1)) {
+            const float v = static_cast<float>(lua_tonumber(L, -1));
+            if (std::isfinite(v))
+                out = v;
+        }
+        lua_pop(L, 1);
+    };
+    opt_number("x", nw.ws.x);
+    opt_number("y", nw.ws.y);
+    opt_number("w", nw.ws.w);
+    opt_number("h", nw.ws.h);
+
+    lua_getfield(L, 1, "title");
+    if (lua_type(L, -1) == LUA_TSTRING)
+        nw.ws.title = lua_tostring(L, -1);
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "visible");
+    if (!lua_isnil(L, -1))
+        nw.ws.visible = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "collapsed");
+    if (!lua_isnil(L, -1))
+        nw.ws.collapsed = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "close_button");
+    if (!lua_isnil(L, -1))
+        nw.close_button = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "layer");
+    if (lua_type(L, -1) == LUA_TSTRING) {
+        const char *layer = lua_tostring(L, -1);
+        nw.layer = (strcmp(layer, "hud_below") == 0 || strcmp(layer, "below") == 0) ? 0 : 1;
+    }
+    lua_pop(L, 1);
+
+    lua_getfield(L, 1, "draw");
+    if (lua_isfunction(L, -1)) {
+        if (nw.draw_ref != LUA_NOREF)
+            luaL_unref(L, LUA_REGISTRYINDEX, nw.draw_ref);
+        nw.draw_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    } else {
+        lua_pop(L, 1);
+    }
+
+    // 每次调用都新建一份句柄表，旧句柄仍指向同一个 C++ 窗口。
+    if (nw.handle_ref != LUA_NOREF)
+        luaL_unref(L, LUA_REGISTRYINDEX, nw.handle_ref);
+
+    static const luaL_Reg methods[] = {
+        {"show", l_gui_win_show},
+        {"hide", l_gui_win_hide},
+        {"toggle", l_gui_win_toggle},
+        {"is_visible", l_gui_win_is_visible},
+        {"collapse", l_gui_win_collapse},
+        {"expand", l_gui_win_expand},
+        {"toggle_collapsed", l_gui_win_toggle_collapsed},
+        {"is_collapsed", l_gui_win_is_collapsed},
+        {"set_title", l_gui_win_set_title},
+        {"set_pos", l_gui_win_set_pos},
+        {"get_pos", l_gui_win_get_pos},
+        {"set_size", l_gui_win_set_size},
+        {"get_size", l_gui_win_get_size},
+        {"set_layer", l_gui_win_set_layer},
+        {"get_layer", l_gui_win_get_layer},
+        {"destroy", l_gui_win_destroy},
+        {nullptr, nullptr},
+    };
+
+    lua_newtable(L); // methods
+    for (const luaL_Reg *fn = methods; fn->name; ++fn) {
+        lua_pushlightuserdata(L, h);
+        lua_pushlstring(L, key.c_str(), key.size());
+        lua_pushcclosure(L, fn->func, 2);
+        lua_setfield(L, -2, fn->name);
+    }
+
+    lua_newtable(L); // handle
+    lua_pushlstring(L, id.c_str(), id.size());
+    lua_setfield(L, -2, "id");
+    lua_pushlstring(L, key.c_str(), key.size());
+    lua_setfield(L, -2, "__window");
+    lua_pushvalue(L, -2);
+    lua_setfield(L, -2, "__methods");
+
+    lua_newtable(L); // metatable
+    lua_pushliteral(L, "__index");
+    lua_pushvalue(L, -4); // methods
+    lua_settable(L, -3);
+    lua_setmetatable(L, -2);
+
+    lua_remove(L, -2); // methods
+    nw.handle_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, nw.handle_ref);
+    return 1;
+}
+
 int l_gui_show(lua_State *L) {
+    if (lua_gettop(L) >= 1 && (lua_isstring(L, 1) || lua_istable(L, 1))) {
+        if (NamedWindow *nw = resolve_named_arg(L, 1))
+            nw->ws.visible = true;
+        return 0;
+    }
     apply_window_visible(current_window(L), gui_mod_id(L), true);
     return 0;
 }
@@ -573,9 +897,53 @@ int l_gui_show(lua_State *L) {
 /// mod.gui.hide() —— 完全隐藏窗口：不再绘制窗口、收起图标和文件夹入口，
 /// 也不响应输入（仍会回调 on_gui，方便 Mod 用 show() 恢复）。
 int l_gui_hide(lua_State *L) {
+    if (lua_gettop(L) >= 1 && (lua_isstring(L, 1) || lua_istable(L, 1))) {
+        hide_named_window(resolve_named_arg(L, 1));
+        return 0;
+    }
     apply_window_visible(current_window(L), gui_mod_id(L), false);
     return 0;
 }
+
+/// mod.gui.toggle(id?)：切换具名窗口（或当前窗口）的显示。
+int l_gui_toggle(lua_State *L) {
+    if (lua_gettop(L) >= 1 && (lua_isstring(L, 1) || lua_istable(L, 1))) {
+        if (NamedWindow *nw = resolve_named_arg(L, 1)) {
+            if (nw->ws.visible)
+                hide_named_window(nw);
+            else
+                nw->ws.visible = true;
+        }
+        return 0;
+    }
+    if (g_active_named) {
+        if (g_active_named->ws.visible)
+            hide_named_window(g_active_named);
+        else
+            g_active_named->ws.visible = true;
+        return 0;
+    }
+    WindowState *ws = current_window(L);
+    if (ws) {
+        ws->visible = !ws->visible;
+        if (!ws->visible)
+            apply_window_visible(ws, gui_mod_id(L), false);
+    }
+    return 0;
+}
+
+/// mod.gui.is_open(id?) -> bool（具名窗口；无参数时同 is_visible）
+int l_gui_is_open(lua_State *L) {
+    NamedWindow *nw = resolve_named_arg(L, lua_gettop(L) >= 1 ? 1 : 0);
+    if (nw) {
+        lua_pushboolean(L, nw->ws.visible);
+        return 1;
+    }
+    WindowState *ws = current_window(L);
+    lua_pushboolean(L, ws && ws->visible);
+    return 1;
+}
+
 
 /// mod.gui.set_collapsed(v) -> v
 int l_gui_set_collapsed(lua_State *L) {
@@ -860,6 +1228,9 @@ const luaL_Reg gui_funcs[] = {
     {"is_visible", l_gui_is_visible},
     {"show", l_gui_show},
     {"hide", l_gui_hide},
+    {"toggle", l_gui_toggle},
+    {"is_open", l_gui_is_open},
+    {"window", l_gui_window},
     {"set_collapsed", l_gui_set_collapsed},
     {"is_collapsed", l_gui_is_collapsed},
     {"toggle_collapsed", l_gui_toggle_collapsed},

@@ -1,5 +1,55 @@
 # 原生 GUI（`mod.gui` / `mod.on_gui`）
 
+## 多窗口（推荐）
+
+旧版 `mod.on_gui` 每个 Mod 只有一个窗口。需要多个面板时用 `mod.gui.window{...}`：
+
+```lua
+local main = mod.gui.window{
+    id      = "main",          -- 同一 Mod 内唯一
+    title   = "主面板",
+    x = 200, y = 120, w = 420,
+    visible = false,           -- 初始隐藏，等按键/物品召唤
+    layer   = "hud",           -- "hud" = HUD 上方；"hud_below" = HUD 下方
+    draw    = function(win)
+        mod.gui.text("窗口 " .. win.id)
+        if mod.gui.button("关闭") then win:hide() end
+    end,
+}
+
+local bag = mod.gui.window{
+    id = "bag", title = "背包", x = 520, y = 200, visible = false,
+    layer = "hud_below",
+    draw = function() mod.gui.text("会被原版 HUD 盖住") end,
+}
+```
+
+窗口句柄方法：
+
+| 方法 | 说明 |
+|---|---|
+| `win:show()` / `win:hide()` / `win:toggle()` | 显示 / 完全隐藏 / 切换 |
+| `win:is_visible()` | 是否显示 |
+| `win:collapse()` / `win:expand()` / `win:toggle_collapsed()` | 收起 / 展开 |
+| `win:is_collapsed()` | 是否收起 |
+| `win:set_title(s)` | 标题 |
+| `win:set_pos(x,y)` / `win:get_pos()` | 位置 |
+| `win:set_size(w,h?)` / `win:get_size()` | 尺寸（高度默认随内容） |
+| `win:set_layer("hud"|"hud_below")` / `win:get_layer()` | 层级 |
+| `win:destroy()` | 删除窗口 |
+
+也可以按 id 操作：`mod.gui.show("main")`、`mod.gui.hide("main")`、`mod.gui.toggle("main")`、`mod.gui.is_open("main")`。
+
+用物品或按键召唤：
+
+```lua
+on_use = function(player) mod.gui.toggle("main") end
+-- 或
+mod.controls.key{ id="open_panel", default="K", on_press=function() mod.gui.toggle("main") end }
+```
+
+## 旧版单窗口（`mod.on_gui`）
+
 定义 `mod.on_gui` 后，加载器为 Mod 创建一个**可拖动窗口**，每帧回调一次。绘制走游戏自带的
 `SpriteBatch`（PC: XNA/FNA，PE: Unity 兼容层），无需额外渲染后端。所有控件是**即时模式**：
 返回值即当前状态，直接写回。
@@ -24,7 +74,8 @@ end
 |---|---|
 | `set_pos(x, y)` / `get_pos()` | 窗口位置（屏幕像素） |
 | `set_width(w)` | 宽度（高度随内容自适应） |
-| `set_visible(v)` / `is_visible()` / `show()` / `hide()` | 完全显隐（连收起图标也一起消失） |
+| `set_visible(v)` / `is_visible()` | 当前（旧版）窗口显隐 |
+| `show(id?)` / `hide(id?)` / `toggle(id?)` / `is_open(id?)` | 显示 / 完全隐藏 / 切换；无参数=当前窗口 |
 | `set_collapsed(v)` / `is_collapsed()` / `toggle_collapsed()` | 收起为小图标 / 展开 |
 | `set_title(title, icon?)` | 标题与收起入口文字（`icon` 建议一个字） |
 | `set_cursor(x, y)` | 移动布局光标（相对内容区左上角） |

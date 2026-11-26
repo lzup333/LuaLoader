@@ -8,11 +8,15 @@
 // ====================================================================
 
 patch_hook_id_t g_draw_hook = PATCH_HOOK_INVALID_ID;
+patch_hook_id_t g_below_hook = PATCH_HOOK_INVALID_ID;
 patch_hook_id_t g_update_hook = PATCH_HOOK_INVALID_ID;
 patch_hook_id_t g_pi_hook = PATCH_HOOK_INVALID_ID;     // PlayerInput.Update（IME 启用用）
 patch_hook_id_t g_cursor_hook = PATCH_HOOK_INVALID_ID; // Main.DrawCursor（GUI 时接管光标）
 bool g_installed = false;
 bool g_in_render = false;
+int g_render_layer = 1;          // 0 = HUD 下方, 1 = HUD 上方
+unsigned g_frame_token = 0;      // Main.Update 每帧自增
+unsigned g_input_token = ~0u;    // 最近一次采样输入所属帧
 #if defined(__ANDROID__)
 patch_hook_id_t g_layer_hook = PATCH_HOOK_INVALID_ID;
 patch_hook_id_t g_cursor_list_hook = PATCH_HOOK_INVALID_ID;
@@ -138,6 +142,7 @@ bool pointer_over_windows() {
 
 /// Main.Update 前缀：指针悬停在 GUI 上时屏蔽游戏鼠标，避免误触游戏操作
 bool update_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
+    ++g_frame_token;
 #if defined(__ANDROID__)
     void *cm_instance = g_gfx.f_cm_instance ? read_static_object(g_gfx.f_cm_instance) : nullptr;
     if (cm_instance && g_gfx.m_cm_get_num_cursors && g_gfx.m_cm_get_cursor && g_gfx.m_adjust_real_screen &&
@@ -186,6 +191,196 @@ bool update_prefix(patch_handle_t, void **, const patch_method_signature_t *, vo
     return false; // 不跳过原函数
 }
 
+/// 每个 Main.Update 只采样一次输入/切换一次图片帧；HUD 上下两层共用。
+void ensure_input_frame() {
+    if (g_input_token == g_frame_token)
+        return;
+    g_input_token = g_frame_token;
+    update_screen_size();
+    update_input();
+    images::begin_frame();
+    g_wheel_delta = read_int(g_gfx.a_scroll_wheel, 0);
+    g_wheel_used = false;
+    g_hover_gui = false;
+    g_scroll_drag = false;
+    g_viewport = {};
+}
+
+bool any_named_window_layer(const int layer) {
+    for (const auto &kv : g_named_windows) {
+        const NamedWindow &nw = kv.second;
+        if (nw.ws.visible && nw.layer == layer && mod_alive(nw.mod_id))
+            return true;
+    }
+    return false;
+}
+
+bool any_named_window() {
+    for (const auto &kv : g_named_windows)
+        if (mod_alive(kv.second.mod_id))
+            return true;
+    return false;
+}
+
+void prune_named_windows() {
+    for (auto it = g_named_windows.begin(); it != g_named_windows.end();) {
+        if (!it->second.destroyed && mod_alive(it->second.mod_id)) {
+            ++it;
+            continue;
+        }
+        if (it->second.destroyed && it->second.L) {
+            if (it->second.handle_ref != LUA_NOREF)
+                luaL_unref(it->second.L, LUA_REGISTRYINDEX, it->second.handle_ref);
+            if (it->second.draw_ref != LUA_NOREF)
+                luaL_unref(it->second.L, LUA_REGISTRYINDEX, it->second.draw_ref);
+        }
+        it = g_named_windows.erase(it);
+    }
+}
+
+/// 绘制某一层的具名窗口（0 = HUD 下方，1 = HUD 上方）。
+void render_named_layer(const int layer) {
+    if (layer == 1)
+        prune_named_windows();
+    if (!any_named_window_layer(layer))
+        return;
+    if (read_bool(g_gfx.a_show_splash, false))
+        return;
+
+#if defined(__ANDROID__)
+    struct NamedUIRenderScope {
+        ~NamedUIRenderScope() {
+            if (g_gfx.m_setup_rendering_ui) {
+                unsigned char v = 0;
+                void *args[1] = {&v};
+                patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
+            }
+        }
+    } named_ui_scope;
+    if (g_gfx.m_setup_rendering_ui) {
+        unsigned char v = 1;
+        void *args[1] = {&v};
+        patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
+    }
+#endif
+
+    ensure_input_frame();
+    g_viewport = {};
+    g_scroll_drag = false;
+
+    patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
+    struct SbGuard {
+        patch_handle_t h;
+        ~SbGuard() { patchlib_free(h); }
+    } sb_guard{sb};
+    if (!sb || !patchlib_is_valid(sb))
+        return;
+
+    // 指针归属：只认本层窗口。
+    g_input_owner.clear();
+    if (!g_pointer_owner.empty()) {
+        auto it = g_named_windows.find(g_pointer_owner);
+        if (it != g_named_windows.end() && it->second.layer == layer && it->second.ws.visible)
+            g_input_owner = g_pointer_owner;
+    }
+    if (g_input_owner.empty() && g_mouse_pressed) {
+        NamedWindow *top = nullptr;
+        for (auto &kv : g_named_windows) {
+            NamedWindow &nw = kv.second;
+            if (!nw.ws.visible || nw.layer != layer || !mod_alive(nw.mod_id))
+                continue;
+            const float h = nw.ws.collapsed ? title_height() : nw.ws.h;
+            if (g_mouse_x >= nw.ws.x && g_mouse_x <= nw.ws.x + nw.ws.w && g_mouse_y >= nw.ws.y &&
+                g_mouse_y <= nw.ws.y + h && (!top || nw.order >= top->order))
+                top = &nw;
+        }
+        if (top) {
+            g_input_owner = top->key;
+            g_pointer_owner = top->key;
+            top->order = ++g_next_window_order;
+        }
+    }
+
+    std::vector<NamedWindow *> list;
+    for (auto &kv : g_named_windows) {
+        NamedWindow &nw = kv.second;
+        if (!nw.ws.visible || nw.layer != layer || !mod_alive(nw.mod_id))
+            continue;
+        if (nw.order == 0)
+            nw.order = ++g_next_window_order;
+        list.push_back(&nw);
+    }
+    std::sort(list.begin(), list.end(), [](const NamedWindow *a, const NamedWindow *b) {
+        return a->order < b->order;
+    });
+
+    g_sb = sb;
+    sb_begin();
+    for (NamedWindow *nw : list) {
+        draw_named_window(*nw);
+        g_active_named = nullptr;
+        g_render_owner.clear();
+    }
+    sb_end();
+    g_sb = nullptr;
+    g_style_window = nullptr;
+
+    if (g_hover_gui) {
+        write_bool(g_gfx.a_mouse_left, false);
+        write_bool(g_gfx.a_mouse_right, false);
+    }
+    if (!g_mouse_down)
+        g_drag_id.clear();
+}
+
+/// 具名窗口绘制的异常保护版本。
+void render_named_guarded(const int layer) {
+    if (g_in_render)
+        return;
+    struct Guard {
+        ~Guard() {
+            g_in_render = false;
+            g_recording = false;
+            g_ctx = nullptr;
+            g_active_named = nullptr;
+            g_current_mod.clear();
+            g_render_owner.clear();
+            g_cmds.clear();
+            g_scroll_stack.clear();
+            g_viewport = {};
+            g_sb = nullptr;
+        }
+    } guard;
+    g_in_render = true;
+    try {
+        render_named_layer(layer);
+    } catch (...) {
+        LOG_ERROR("[gui] named window render exception (layer {})", layer);
+        if (g_sb) {
+            try {
+                sb_end();
+            } catch (...) {
+            }
+        }
+        g_click_state.reset();
+        g_drag_id.clear();
+        g_slider_active.clear();
+        g_pointer_owner.clear();
+    }
+}
+
+/// HUD 下方那一层的绘制入口（Main.DrawInterface 前缀）。
+bool frame_below_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
+    if (!g_installed || g_in_render)
+        return false;
+    g_render_layer = 0;
+    resolve_gfx();
+    if (!g_gfx.usable)
+        return false;
+    render_named_guarded(0);
+    return false;
+}
+
 /// 绘制一帧 GUI：解析图形后端 → 更新输入 → 画窗口/文件夹/图标 → 提交 SpriteBatch。
 void render() {
     resolve_gfx();
@@ -201,27 +396,30 @@ void render() {
         }
     }
     if (!any_gui) {
-        clear_text_cache();
-        images::clear();
-        g_windows.clear();
-        g_headers.clear();
-        g_edit = EditState{};
-        ime::close();
-        kbd::reset();
-        g_scrolls.clear();
-        g_active_scroll.clear();
-        g_pointer_owner.clear();
-        g_input_owner.clear();
-        g_drag_id.clear();
-        g_slider_active.clear();
-        g_click_state.reset();
-        g_render_owner.clear();
-        g_mouse_down = g_prev_mouse_down = false;
+        if (!any_named_window()) {
+            clear_text_cache();
+            images::clear();
+            g_windows.clear();
+            g_headers.clear();
+            g_edit = EditState{};
+            ime::close();
+            kbd::reset();
+            g_scrolls.clear();
+            g_active_scroll.clear();
+            g_pointer_owner.clear();
+            g_input_owner.clear();
+            g_drag_id.clear();
+            g_slider_active.clear();
+            g_click_state.reset();
+            g_render_owner.clear();
+            g_mouse_down = g_prev_mouse_down = false;
 #if defined(__ANDROID__)
-        g_active_cursor_valid = false;
-        g_captured_touches.clear();
+            g_active_cursor_valid = false;
+            g_captured_touches.clear();
 #endif
-        return;
+            return;
+        }
+        // 只有具名窗口：继续走清理/图片修剪，但不画 legacy 窗口。
     }
 
     // 启动画面（showSplash）阶段贴图/字体尚未就绪，此时绘制会导致
@@ -251,10 +449,24 @@ void render() {
     for (const auto &kv : core::lua_mod_handles)
         if (kv.second && kv.second->gui_ref != LUA_NOREF)
             owners.push_back(kv.second->mod_id);
+    for (const auto &kv : g_named_windows) {
+        if (!mod_alive(kv.second.mod_id))
+            continue;
+        const std::string &id = kv.second.mod_id;
+        if (std::find(owners.begin(), owners.end(), id) == owners.end())
+            owners.push_back(id);
+    }
+    std::vector<std::string> prefixes;
+    prefixes.reserve(owners.size() + g_named_windows.size());
+    for (const auto &id : owners)
+        prefixes.push_back(id + "#");
+    for (const auto &kv : g_named_windows)
+        if (mod_alive(kv.second.mod_id))
+            prefixes.push_back(kv.second.key + "#");
     images::prune(owners);
-    auto owner_alive = [&owners](const std::string &key) {
-        for (const auto &id : owners)
-            if (key.rfind(id + "#", 0) == 0)
+    auto owner_alive = [&prefixes](const std::string &key) {
+        for (const auto &p : prefixes)
+            if (key.rfind(p, 0) == 0)
                 return true;
         return false;
     };
@@ -297,14 +509,7 @@ void render() {
     for (const auto &id : g_image_release_queue)
         images::release(id);
     g_image_release_queue.clear();
-    update_screen_size();
-    update_input();
-    images::begin_frame();
-    g_scroll_drag = false;
-    g_viewport = {};
-    g_wheel_delta = read_int(g_gfx.a_scroll_wheel, 0);
-    g_wheel_used = false;
-    g_hover_gui = false;
+    ensure_input_frame();
 
     patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
 
@@ -335,7 +540,8 @@ void render() {
             ws.y = std::max(0.0f, std::min(ws.y, std::max(0.0f, g_screen_h - access)));
             windows.push_back(kv.second);
         }
-    if (!g_pointer_owner.empty() && g_pointer_owner != "#keyboard" && g_pointer_owner.rfind("#folder:", 0) != 0) {
+    if (!g_pointer_owner.empty() && g_pointer_owner != "#keyboard" &&
+        g_pointer_owner.rfind("#folder:", 0) != 0 && !g_named_windows.count(g_pointer_owner)) {
         auto it = g_windows.find(g_pointer_owner);
         if (it == g_windows.end() || !it->second.visible)
             g_pointer_owner.clear();
@@ -351,6 +557,8 @@ void render() {
         }
     }
     g_input_owner = g_pointer_owner;
+    if (g_named_windows.count(g_input_owner))
+        g_input_owner.clear();
     if (g_input_owner.empty())
         g_input_owner = folder_hit(g_mouse_x, g_mouse_y);
     if (g_mouse_pressed && g_input_owner.rfind("#folder:", 0) == 0)
@@ -400,21 +608,29 @@ void render() {
 #endif
 
     g_style_window = nullptr;
+    sb_end();
+    g_sb = nullptr;
+}
+
+/// 每帧最后一步：文本输入提交 / 点击状态收尾 / 触摸释放 / 输入屏蔽。
+/// 放在 legacy 与具名窗口都画完之后统一执行一次。
+void finalize_gui_frame() {
+    if (!g_installed)
+        return;
+
     if (g_edit.active) {
         if (ime::supported()) {
-            // Android：轮询系统软键盘，取代自绘虚拟键盘
             std::string t;
             const int st = ime::poll(t);
             if (st == 0)
-                g_edit.buf = t; // 仍在编辑
+                g_edit.buf = t;
             else if (st == 1 || st == 3) {
                 g_edit.buf = t;
                 g_edit.active = false;
-            } // 完成/失焦：提交
-            else
-                g_edit.active = false; // 2 = 取消：丢弃
+            } else {
+                g_edit.active = false;
+            }
         } else if (kbd::supported()) {
-            // PC：纯硬件键盘输入（不再内嵌拼音输入法）
             kbd::Event ev;
             kbd::poll(ev);
             if (!ev.ime.empty())
@@ -426,28 +642,33 @@ void render() {
             if (ev.enter || ev.escape)
                 g_edit.active = false;
         } else {
-            // 兜底：自绘虚拟键盘
-            g_cmds.clear();
-            g_recording = true;
-            draw_virtual_keyboard();
-            g_recording = false;
-            flush_cmds();
+            patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
+            if (sb && patchlib_is_valid(sb)) {
+                g_sb = sb;
+                sb_begin();
+                g_cmds.clear();
+                g_recording = true;
+                draw_virtual_keyboard();
+                g_recording = false;
+                flush_cmds();
+                sb_end();
+                g_sb = nullptr;
+            }
+            patchlib_free(sb);
         }
-        if (!g_edit.active) {
+        if (!g_edit.active)
             kbd::reset();
-        }
     }
     if (!g_mouse_down)
         g_active_scroll.clear();
     g_click_state.finish(g_mouse_down, g_mouse_released);
 
-    sb_end();
-    g_sb = nullptr;
 #if defined(__ANDROID__)
+    if (!g_mouse_down)
+        g_active_cursor_valid = false;
     release_finished_touches();
 #endif
 
-    // 指针悬停在 GUI 上时，屏蔽游戏的鼠标左键，避免同时触发游戏操作
     if (g_hover_gui) {
         write_bool(g_gfx.a_mouse_left, false);
         write_bool(g_gfx.a_mouse_right, false);
@@ -496,7 +717,17 @@ void render_guarded() {
     }
 }
 
-/// Main.Draw 后置：每帧渲染入口。
+/// Main.Draw 后置：每帧渲染入口（HUD 上方 + legacy 窗口）。
 void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
+    if (!g_installed || g_in_render)
+        return;
+    if (g_update_hook == PATCH_HOOK_INVALID_ID)
+        ++g_frame_token; // 没有 Update 钩子时，至少保证每帧采样一次
+    g_render_layer = 1;
+    resolve_gfx();
+    if (!g_gfx.usable)
+        return;
+    render_named_guarded(1);
     render_guarded();
+    finalize_gui_frame();
 }

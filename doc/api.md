@@ -121,7 +121,7 @@ todo_list = { "setup" }   -- 启动时按顺序执行清单里的函数
 - `todo_list`（通用）→ `todo_list_<平台>`（如 `todo_list_android`）→ `todo_list_<平台>_<架构>`。
   清单元素是函数名字符串，也可直接写函数。
 - 可选 `mod.init()`（清单之后调用）/ `mod.cleanup()`（卸载时调用）。
-- 定义 `mod.on_gui()` 后加载器为该 Mod 开一个窗口并每帧回调，见 [`gui.md`](gui.md)。
+- 定义 `mod.on_gui()` 后加载器为该 Mod 开一个窗口并每帧回调；需要多个窗口时用 `mod.gui.window{...}`，见 [`gui.md`](gui.md)。
 
 ## `mod` 表
 
