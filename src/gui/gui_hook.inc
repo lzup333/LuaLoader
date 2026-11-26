@@ -19,6 +19,8 @@ unsigned g_frame_token = 0;      // Main.Update 每帧自增
 unsigned g_input_token = ~0u;    // 最近一次采样输入所属帧
 bool g_need_cursor_redraw = false;
 patch_handle_t g_m_cursor_layer = nullptr;
+
+void ensure_input_frame();
 #if defined(__ANDROID__)
 patch_hook_id_t g_layer_hook = PATCH_HOOK_INVALID_ID;
 patch_hook_id_t g_cursor_list_hook = PATCH_HOOK_INVALID_ID;
@@ -145,6 +147,10 @@ bool pointer_over_windows() {
 /// Main.Update 前缀：指针悬停在 GUI 上时屏蔽游戏鼠标，避免误触游戏操作
 bool update_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
     ++g_frame_token;
+    // 先采样原始输入，再屏蔽游戏鼠标；否则 GUI 自己读到的也是被屏蔽后的值。
+    resolve_gfx();
+    if (g_gfx.usable)
+        ensure_input_frame();
 #if defined(__ANDROID__)
     void *cm_instance = g_gfx.f_cm_instance ? read_static_object(g_gfx.f_cm_instance) : nullptr;
     if (cm_instance && g_gfx.m_cm_get_num_cursors && g_gfx.m_cm_get_cursor && g_gfx.m_adjust_real_screen &&
