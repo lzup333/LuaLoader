@@ -528,12 +528,16 @@ void render_named_guarded(const int layer) {
     }
 }
 
-/// HUD 下方那一层的绘制入口（Main.DrawInterface 前缀）。
-bool frame_below_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
+/// HUD 下方那一层的绘制入口（PC: Main.DrawInterface 前缀 / PE: SetupRenderingUI 前缀）。
+bool frame_below_prefix(patch_handle_t, void **args, const patch_method_signature_t *, void *) {
     if (!g_installed || g_in_render)
         return false;
-    // DrawInterface 在某些场景一帧可能被调用多次（例如 UI 缩放/热键栏重绘），
-    // 每帧只画一次，避免重复绘制与点击被消费两遍。
+#if defined(__ANDROID__)
+    // SetupRenderingUI(bool renderingUI)：只在进入 UI 渲染时画，离开时跳过。
+    if (args && args[0] && *static_cast<unsigned char *>(args[0]) == 0)
+        return false;
+#endif
+    // 该函数一帧可能被调用多次，每帧只画一次，避免重复绘制与点击被消费两遍。
     if (g_below_token == g_frame_token)
         return false;
     g_below_token = g_frame_token;
@@ -541,6 +545,12 @@ bool frame_below_prefix(patch_handle_t, void **, const patch_method_signature_t 
     resolve_gfx();
     if (!g_gfx.usable)
         return false;
+    static bool logged_below = false;
+    if (!logged_below) {
+        logged_below = true;
+        LOG_INFO("[gui] hud_below hook fired (token={}), layer0 windows={}", g_frame_token,
+                 any_named_window_layer(0) ? 1 : 0);
+    }
     render_named_guarded(0);
     return false;
 }

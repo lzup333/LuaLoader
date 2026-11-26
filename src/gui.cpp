@@ -119,9 +119,33 @@ void install() {
         return;
     }
 
+    #if defined(__ANDROID__)
+    // PE：游戏内 HUD 不走 Main.DrawInterface（那只在菜单/地图分支调用），
+    // 而是在 DoDraw 里 SetupRenderingUI(true) 之后的 UI 段绘制。
+    // 所以在 SetupRenderingUI(true) 前缀画 hud_below：世界已画完、HUD 还没画。
+    {
+        patch_handle_t runner = patchlib_type_get_type("", "XNAUnityRunner");
+        if (!runner || !patchlib_is_valid(runner)) {
+            patchlib_free(runner);
+            runner = patchlib_type_get_type("Terraria", "XNAUnityRunner");
+        }
+        patch_handle_t setup_ui =
+            runner ? patchlib_type_get_method_by_param_count(runner, "SetupRenderingUI", 1) : nullptr;
+        if (setup_ui && patchlib_is_valid(setup_ui)) {
+            g_below_hook = patchlib_install_prepost_hook(setup_ui, frame_below_prefix, nullptr);
+            if (g_below_hook == PATCH_HOOK_INVALID_ID)
+                LOG_WARN("[gui] failed to install SetupRenderingUI hook; hud_below unavailable");
+            else
+                LOG_INFO("[gui] hud_below layer enabled (SetupRenderingUI prefix, id={})",
+                         static_cast<int>(g_below_hook));
+        } else {
+            LOG_WARN("[gui] XNAUnityRunner.SetupRenderingUI not found; hud_below unavailable");
+        }
+        patchlib_free(setup_ui);
+        patchlib_free(runner);
+    }
+#else
     // HUD 下方那一层：在 Main.DrawInterface 之前绘制，HUD 会盖在上面。
-    // PC 与 PE 都装这个钩子；PE 的 Main.Draw 后置在整帧最末（HUD 之上），
-    // 所以 PE 的 hud_below 也必须借 DrawInterface 前缀才能落到 HUD 下方。
     {
         patch_handle_t draw_interface =
             patchlib_type_get_method_by_param_count(main_type, "DrawInterface", 1);
@@ -137,6 +161,7 @@ void install() {
         }
         patchlib_free(draw_interface);
     }
+#endif
 
     // 输入：在 PlayerInput.UpdateInput 之后采样真实鼠标，再屏蔽游戏侧点击。
     {
