@@ -45,7 +45,7 @@ local bag = mod.gui.window{
 ```lua
 on_use = function(player) mod.gui.toggle("main") end
 -- 或
-mod.controls.key{ id="open_panel", default="K", on_press=function() mod.gui.toggle("main") end }
+mod.controls.register{ id="open_panel", name="打开面板", key="K", on_press=function() mod.gui.toggle("main") end }
 ```
 
 ## 旧版单窗口（`mod.on_gui`）
