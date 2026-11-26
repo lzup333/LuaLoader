@@ -119,7 +119,9 @@ void install() {
         return;
     }
 
-    // HUD 下方那一层：在 DrawInterface 之前绘制，HUD 会盖在上面。
+    // HUD 下方那一层：桌面在 DrawInterface 之前绘制；PE 的 Main.Draw 后置
+    // 本身就在 HUD 下方，所以 PE 不装这个钩子，改在 frame_postfix 里先画 layer 0。
+#if !defined(__ANDROID__)
     {
         patch_handle_t draw_interface =
             patchlib_type_get_method_by_param_count(main_type, "DrawInterface", 1);
@@ -135,6 +137,7 @@ void install() {
         }
         patchlib_free(draw_interface);
     }
+#endif
 
     // 输入：在 PlayerInput.UpdateInput 之后采样真实鼠标，再屏蔽游戏侧点击。
     {
