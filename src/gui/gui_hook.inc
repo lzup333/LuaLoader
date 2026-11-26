@@ -153,8 +153,13 @@ void update_after_input() {
     if (gui_trace_on()) LOG_INFO("[gui-trace] update_after_input begin");
     ++g_frame_token;
     resolve_gfx();
-    if (g_gfx.usable)
-        ensure_input_frame();
+    if (!g_gfx.usable)
+        return;
+    if (read_bool(g_gfx.a_show_splash, false))
+        return;
+#if !defined(__ANDROID__)
+    ensure_input_frame();
+#endif
 #if defined(__ANDROID__)
     void *cm_instance = g_gfx.f_cm_instance ? read_static_object(g_gfx.f_cm_instance) : nullptr;
     if (cm_instance && g_gfx.m_cm_get_num_cursors && g_gfx.m_cm_get_cursor && g_gfx.m_adjust_real_screen &&
@@ -834,16 +839,20 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
                  (g_set_zoom_ui && patchlib_is_valid(g_set_zoom_ui)) ? 1 : 0,
                  g_gfx.usable ? 1 : 0);
     }
+#if !defined(__ANDROID__)
     begin_ui_zoom();
     if (gui_trace_on()) LOG_INFO("[gui-trace] zoom in done");
+#endif
     render_named_guarded(1);
     if (gui_trace_on()) LOG_INFO("[gui-trace] named layer done");
     render_guarded();
     if (gui_trace_on()) LOG_INFO("[gui-trace] legacy render done");
     finalize_gui_frame();
     if (gui_trace_on()) LOG_INFO("[gui-trace] finalize done");
+#if !defined(__ANDROID__)
     redraw_game_cursor();
     if (gui_trace_on()) LOG_INFO("[gui-trace] cursor done");
     end_ui_zoom();
     if (gui_trace_on()) LOG_INFO("[gui-trace] zoom out done");
+#endif
 }

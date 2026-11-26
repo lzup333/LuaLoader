@@ -640,6 +640,7 @@ void sb_begin() {
     if (!g_sb)
         return;
     Mat4 ui;
+#if !defined(__ANDROID__)
     if (g_gfx.m_sb_begin8 && ui_scale_matrix(ui)) {
         // 与原版 HUD/鼠标指针同一套 UI 缩放矩阵，避免 UI 缩放下坐标错位。
         NullableMat m{};
@@ -653,6 +654,7 @@ void sb_begin() {
         patchlib_method_invoke_args(g_gfx.m_sb_begin8, g_sb, nullptr, args);
         return;
     }
+#endif
 #if defined(__ANDROID__)
     // PE：强制使用单位矩阵，避免 GUI 跟随世界相机/视野缩放
     // （PE 无 0 参 Begin；2 参 Begin 会带上世界变换）
@@ -769,6 +771,13 @@ void release_finished_touches();
 #endif
 /// 采样输入（鼠标/触摸/键盘），更新 GUI 交互状态。
 void update_input() {
+    if (gui_trace_on()) LOG_INFO("[gui-trace] update_input begin android={}", 
+#if defined(__ANDROID__)
+        1
+#else
+        0
+#endif
+    );
 #if defined(__ANDROID__)
     bool android_touch_handled = false;
     void *cm_instance = g_gfx.f_cm_instance ? read_static_object(g_gfx.f_cm_instance) : nullptr;
@@ -879,6 +888,9 @@ void update_input() {
     g_mouse_released = !g_mouse_down && g_prev_mouse_down;
     g_prev_mouse_down = g_mouse_down;
 #endif
+    if (gui_trace_on()) LOG_INFO("[gui-trace] update_input end mouse=({},{}) down={} pressed={} released={}",
+                                 g_mouse_x, g_mouse_y, g_mouse_down ? 1 : 0,
+                                 g_mouse_pressed ? 1 : 0, g_mouse_released ? 1 : 0);
 }
 
 bool mouse_in(const float x, const float y, const float w, const float h) {
