@@ -194,6 +194,7 @@ struct Gfx {
     patch_handle_t m_draw_border_string{nullptr}; // Utils.DrawBorderString(...)
 
     Accessor a_screen_w, a_screen_h;
+    Accessor a_ui_scale_matrix; // Main.UIScaleMatrix（Matrix 字段/属性）
     Accessor a_mouse_x, a_mouse_y;
     Accessor a_mouse_left, a_mouse_left_release, a_mouse_right, a_scroll_wheel;
     Accessor a_show_splash;
@@ -235,6 +236,7 @@ void resolve_gfx() {
 
         g_gfx.a_screen_w = resolve_accessor(g_gfx.t_main, "screenWidth");
         g_gfx.a_screen_h = resolve_accessor(g_gfx.t_main, "screenHeight");
+        g_gfx.a_ui_scale_matrix = resolve_accessor(g_gfx.t_main, "UIScaleMatrix");
         g_gfx.a_mouse_x = resolve_accessor(g_gfx.t_main, "mouseX");
         g_gfx.a_mouse_y = resolve_accessor(g_gfx.t_main, "mouseY");
         g_gfx.a_mouse_left = resolve_accessor(g_gfx.t_main, "mouseLeft");
@@ -597,11 +599,37 @@ void draw_image(const std::string &id, float x, float y, float w, float h, const
 }
 
 /// 开始 SpriteBatch（使用单位矩阵，避免受游戏相机/缩放影响）。
-bool g_batch_borrowed = false;
+/// 读取 Main.UIScaleMatrix（字段或属性）；没有时返回 false 保持单位矩阵。
+bool ui_scale_matrix(Mat4 &out) {
+    const Accessor &a = g_gfx.a_ui_scale_matrix;
+    if (a.field) {
+        patchlib_field_get_value(a.field, nullptr, &out);
+        return true;
+    }
+    if (a.getter) {
+        patchlib_method_invoke_args(a.getter, nullptr, &out, nullptr);
+        return true;
+    }
+    return false;
+}
 
 void sb_begin() {
-    if (!g_sb || g_batch_borrowed)
+    if (!g_sb)
         return;
+    Mat4 ui;
+    if (g_gfx.m_sb_begin8 && ui_scale_matrix(ui)) {
+        // 与原版 HUD/鼠标指针同一套 UI 缩放矩阵，避免 UI 缩放下坐标错位。
+        NullableMat m{};
+        m.has_value = 1;
+        m.value = ui;
+        int sort_mode = 0;
+        patch_handle_t null_state = nullptr;
+        unsigned char deferred = 1;
+        void *args[8] = {&sort_mode,  &null_state, &null_state, &null_state,
+                         &null_state, &null_state, &m,          &deferred};
+        patchlib_method_invoke_args(g_gfx.m_sb_begin8, g_sb, nullptr, args);
+        return;
+    }
 #if defined(__ANDROID__)
     // PE：强制使用单位矩阵，避免 GUI 跟随世界相机/视野缩放
     // （PE 无 0 参 Begin；2 参 Begin 会带上世界变换）
@@ -659,7 +687,7 @@ void sb_begin() {
 
 /// 结束 SpriteBatch。
 void sb_end() {
-    if (g_batch_borrowed || !g_gfx.m_sb_end || !g_sb)
+    if (!g_gfx.m_sb_end || !g_sb)
         return;
     patchlib_method_invoke_args(g_gfx.m_sb_end, g_sb, nullptr, nullptr);
 }

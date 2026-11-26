@@ -17,6 +17,8 @@ bool g_in_render = false;
 int g_render_layer = 1;          // 0 = HUD 下方, 1 = HUD 上方
 unsigned g_frame_token = 0;      // Main.Update 每帧自增
 unsigned g_input_token = ~0u;    // 最近一次采样输入所属帧
+bool g_need_cursor_redraw = false;
+patch_handle_t g_m_cursor_layer = nullptr;
 #if defined(__ANDROID__)
 patch_hook_id_t g_layer_hook = PATCH_HOOK_INVALID_ID;
 patch_hook_id_t g_cursor_list_hook = PATCH_HOOK_INVALID_ID;
@@ -196,6 +198,7 @@ void ensure_input_frame() {
     if (g_input_token == g_frame_token)
         return;
     g_input_token = g_frame_token;
+    g_need_cursor_redraw = false;
     update_screen_size();
     update_input();
     images::begin_frame();
@@ -324,6 +327,8 @@ void render_named_layer(const int layer) {
     sb_end();
     g_sb = nullptr;
     g_style_window = nullptr;
+    if (!list.empty())
+        g_need_cursor_redraw = true;
 
     if (g_hover_gui) {
         write_bool(g_gfx.a_mouse_left, false);
@@ -591,6 +596,12 @@ void render() {
     std::sort(windows.begin(), windows.end(),
               [](auto *a, auto *b) { return g_windows[a->mod_id].order < g_windows[b->mod_id].order; });
     for (auto *h : windows) {
+        if (g_windows[h->mod_id].visible) {
+            g_need_cursor_redraw = true;
+            break;
+        }
+    }
+    for (auto *h : windows) {
         if (!grouped_icon(h->mod_id))
             draw_mod_gui(h);
         g_render_owner.clear();
@@ -717,38 +728,40 @@ void render_guarded() {
     }
 }
 
-/// HUD 上方窗口的绘制入口：挂在 DrawInterface_36_Cursor **之前**。
-/// 原版随后用 UIScaleMatrix / SamplerStateForCursor 自己画指针，
-/// 因此窗口永远压在指针下面，且不会出现两套鼠标样式/缩放。
-///
-/// 此时前一个 HUD 层还开着 SpriteBatch，不能再 Begin/End 自己的批次：
-/// 置 g_batch_borrowed 借用当前批次（UI 缩放、采样状态与原版一致）。
-bool cursor_frame_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
-    if (!g_installed || g_in_render)
-        return false;
-    if (g_update_hook == PATCH_HOOK_INVALID_ID)
-        ++g_frame_token;
-    g_render_layer = 1;
-    resolve_gfx();
-    if (!g_gfx.usable)
-        return false;
-
-    struct BorrowGuard {
-        ~BorrowGuard() {
-            g_batch_borrowed = false;
-            g_sb = nullptr;
+/// 在窗口画完后让原版再画一次鼠标指针，且严格走原版 UIScaleMatrix 批次。
+/// 直接调用 DrawInterface_36_Cursor 本体（End + Begin(UIScaleMatrix) + 画指针），
+/// 不会额外出现第二个指针，样式与缩放也与原版一致。
+void redraw_game_cursor() {
+    if (!g_need_cursor_redraw)
+        return;
+    if (!g_m_cursor_layer) {
+        patch_handle_t main_t = patchlib_type_get_type("Terraria", "Main");
+        if (main_t && patchlib_is_valid(main_t)) {
+            g_m_cursor_layer =
+                patchlib_type_get_method_by_param_count(main_t, "DrawInterface_36_Cursor", 0);
+            patchlib_free(main_t);
         }
-    } guard;
-    g_batch_borrowed = true;
-    render_named_guarded(1);
-    render_guarded();
-    finalize_gui_frame();
-    return false;
+    }
+    if (!g_m_cursor_layer || !patchlib_is_valid(g_m_cursor_layer))
+        return;
+
+    patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
+    if (!sb || !patchlib_is_valid(sb))
+        return;
+    g_sb = sb;
+    // 原版方法开头就是 End()，所以先开一个批次给它 End；
+    // 之后它会用 UIScaleMatrix 重开并画指针。
+    sb_begin();
+    patchlib_method_invoke_args(g_m_cursor_layer, PATCH_NULL, nullptr, nullptr);
+    // 收掉它留下的批次，避免下一帧 Begin 时状态未闭合。
+    sb_end();
+    g_sb = nullptr;
+    patchlib_free(sb);
 }
 
-/// Main.Draw 后置：仅在 Cursor 层钩子不可用时作为兜底绘制入口。
+/// Main.Draw 后置：每帧渲染入口（HUD 上方 + legacy 窗口）。
 void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
-    if (!g_installed || g_in_render || g_cursor_hook != PATCH_HOOK_INVALID_ID)
+    if (!g_installed || g_in_render)
         return;
     if (g_update_hook == PATCH_HOOK_INVALID_ID)
         ++g_frame_token;
@@ -759,4 +772,5 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
     render_named_guarded(1);
     render_guarded();
     finalize_gui_frame();
+    redraw_game_cursor();
 }
