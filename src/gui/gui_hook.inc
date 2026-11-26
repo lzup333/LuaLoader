@@ -362,6 +362,112 @@ void render_named_layer(const int layer) {
         g_drag_id.clear();
 }
 
+#if defined(__ANDROID__)
+/// PE：hud_below / hud 两层在同一个 SpriteBatch / UI scope 里按 0 -> 1 绘制，
+/// 保持原生 GUI 初版（c561ed9 / c9e945b）在 PE 上的 HUD 下方行为。
+void render_named_android_both() {
+    prune_named_windows();
+    if (!any_named_window())
+        return;
+    if (read_bool(g_gfx.a_show_splash, false))
+        return;
+
+    struct NamedUIRenderScope {
+        ~NamedUIRenderScope() {
+            if (g_gfx.m_setup_rendering_ui) {
+                unsigned char v = 0;
+                void *args[1] = {&v};
+                patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
+            }
+        }
+    } named_ui_scope;
+    if (g_gfx.m_setup_rendering_ui) {
+        unsigned char v = 1;
+        void *args[1] = {&v};
+        patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
+    }
+
+    ensure_input_frame();
+    g_viewport = {};
+    g_scroll_drag = false;
+
+    patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
+    struct SbGuard {
+        patch_handle_t h;
+        ~SbGuard() { patchlib_free(h); }
+    } sb_guard{sb};
+    if (!sb || !patchlib_is_valid(sb))
+        return;
+
+    g_sb = sb;
+    sb_begin();
+    for (int layer = 0; layer <= 1; ++layer) {
+        std::vector<NamedWindow *> list;
+        for (auto &kv : g_named_windows) {
+            NamedWindow &nw = kv.second;
+            if (!nw.ws.visible || nw.layer != layer || !mod_alive(nw.mod_id))
+                continue;
+            if (nw.order == 0)
+                nw.order = ++g_next_window_order;
+            list.push_back(&nw);
+        }
+        std::sort(list.begin(), list.end(), [](const NamedWindow *a, const NamedWindow *b) {
+            return a->order < b->order;
+        });
+        for (NamedWindow *nw : list) {
+            draw_named_window(*nw);
+            g_active_named = nullptr;
+            g_render_owner.clear();
+        }
+    }
+    sb_end();
+    g_sb = nullptr;
+    g_style_window = nullptr;
+
+    if (g_hover_gui) {
+        write_bool(g_gfx.a_mouse_left, false);
+        write_bool(g_gfx.a_mouse_right, false);
+    }
+    if (!g_mouse_down)
+        g_drag_id.clear();
+}
+
+void render_named_android_guarded() {
+    if (g_in_render)
+        return;
+    struct Guard {
+        ~Guard() {
+            g_in_render = false;
+            g_recording = false;
+            g_ctx = nullptr;
+            g_active_named = nullptr;
+            g_current_mod.clear();
+            g_render_owner.clear();
+            g_cmds.clear();
+            g_scroll_stack.clear();
+            g_viewport = {};
+            g_sb = nullptr;
+        }
+    } guard;
+    g_in_render = true;
+    try {
+        render_named_android_both();
+    } catch (...) {
+        LOG_ERROR("[gui] PE named window render exception");
+        if (g_sb) {
+            try {
+                sb_end();
+            } catch (...) {
+            }
+        }
+        g_click_state.reset();
+        g_drag_id.clear();
+        g_slider_active.clear();
+        g_pointer_owner.clear();
+    }
+}
+#endif
+
 /// 具名窗口绘制的异常保护版本。
 void render_named_guarded(const int layer) {
     if (g_in_render)
@@ -821,14 +927,12 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
     if (read_bool(g_gfx.a_show_splash, false))
         return;
 #if defined(__ANDROID__)
-    // PE 的 Main.Draw 后置本来就位于 HUD 下方：两层都在这里画，只固定先后顺序。
-    g_render_layer = 0;
-    render_named_guarded(0);
-    g_render_layer = 1;
+    // PE 的 Main.Draw 后置本来就在 HUD 下方：两层同一批次内按 0 -> 1 画。
+    render_named_android_guarded();
 #else
     begin_ui_zoom();
-#endif
     render_named_guarded(1);
+#endif
     render_guarded();
     finalize_gui_frame();
 #if !defined(__ANDROID__)
