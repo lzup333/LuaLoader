@@ -820,12 +820,14 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
     if (read_bool(g_gfx.a_show_splash, false))
         return;
 
+#if !defined(__ANDROID__)
     begin_ui_zoom();
+#endif
     render_named_guarded(1);
     render_guarded();
     finalize_gui_frame();
 #if !defined(__ANDROID__)
     redraw_game_cursor();
-#endif
     end_ui_zoom();
+#endif
 }

@@ -636,6 +636,7 @@ void sb_begin() {
     if (!g_sb)
         return;
     Mat4 ui;
+#if !defined(__ANDROID__)
     if (g_gfx.m_sb_begin8 && ui_scale_matrix(ui)) {
         // 与原版 HUD/鼠标指针同一套 UI 缩放矩阵，避免 UI 缩放下坐标错位。
         NullableMat m{};
@@ -660,6 +661,7 @@ void sb_begin() {
         return;
 #endif
     }
+#endif
 #if defined(__ANDROID__)
     // PE：强制使用单位矩阵，避免 GUI 跟随世界相机/视野缩放
     // （PE 无 0 参 Begin；2 参 Begin 会带上世界变换）
