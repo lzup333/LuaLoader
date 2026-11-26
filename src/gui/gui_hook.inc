@@ -17,6 +17,7 @@ bool g_in_render = false;
 int g_render_layer = 1;          // 0 = HUD 下方, 1 = HUD 上方
 unsigned g_frame_token = 0;      // Main.Update 每帧自增
 unsigned g_input_token = ~0u;    // 最近一次采样输入所属帧
+unsigned g_below_token = ~0u;    // 最近一次绘制 hud_below 层的帧号（去重，防止 DrawInterface 一帧多次调用重复画）
 bool g_need_cursor_redraw = false;
 patch_handle_t g_m_cursor_layer = nullptr;
 bool g_inside_interface_layers = false; // 在 DrawInterface 层内绘制（UI 渲染模式已由原版开启）
@@ -531,6 +532,11 @@ void render_named_guarded(const int layer) {
 bool frame_below_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
     if (!g_installed || g_in_render)
         return false;
+    // DrawInterface 在某些场景一帧可能被调用多次（例如 UI 缩放/热键栏重绘），
+    // 每帧只画一次，避免重复绘制与点击被消费两遍。
+    if (g_below_token == g_frame_token)
+        return false;
+    g_below_token = g_frame_token;
     g_render_layer = 0;
     resolve_gfx();
     if (!g_gfx.usable)
@@ -940,6 +946,8 @@ void end_ui_zoom() {
 void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
     if (!g_installed || g_in_render)
         return;
+    // 本帧帧号：DrawInterface 前缀用的就是它（输入钩子装好时已在本帧 Update 里 +1）。
+    const unsigned frame_token = g_frame_token;
     if (g_update_hook == PATCH_HOOK_INVALID_ID)
         ++g_frame_token;
     g_render_layer = 1;
@@ -950,8 +958,18 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
     if (read_bool(g_gfx.a_show_splash, false))
         return;
 #if defined(__ANDROID__)
-    // PE 的 Main.Draw 后置本来就在 HUD 下方：两层同一批次内按 0 -> 1 画。
-    render_named_android_guarded();
+    // PE：hud_below 由 DrawInterface 前缀绘制（HUD 下方）；这里只画 HUD 上方那层。
+    // DrawInterface 没装成功（或菜单等场景没调用）时回退到“两层同批一次画”。
+    if (g_below_hook != PATCH_HOOK_INVALID_ID) {
+        if (g_below_token != frame_token) {
+            g_render_layer = 0;
+            render_named_guarded(0);
+        }
+        g_render_layer = 1;
+        render_named_guarded(1);
+    } else {
+        render_named_android_guarded();
+    }
 #else
     begin_ui_zoom();
     render_named_guarded(1);
