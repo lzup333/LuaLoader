@@ -195,6 +195,7 @@ struct Gfx {
 
     Accessor a_screen_w, a_screen_h;
     Accessor a_ui_scale_matrix; // Main.UIScaleMatrix（Matrix 字段/属性）
+    Accessor a_ui_scale;        // Main.UIScale（float 字段/属性）
     Accessor a_mouse_x, a_mouse_y;
     Accessor a_mouse_left, a_mouse_left_release, a_mouse_right, a_scroll_wheel;
     Accessor a_show_splash;
@@ -213,6 +214,23 @@ struct Gfx {
 };
 
 Gfx g_gfx;
+
+/// 读取 Main.UIScale；失败返回 1（不缩放）。
+float ui_scale_value() {
+    const Accessor &a = g_gfx.a_ui_scale;
+    if (a.field) {
+        float v = 1.0f;
+        patchlib_field_get_value(a.field, nullptr, &v);
+        return v > 0.0f ? v : 1.0f;
+    }
+    if (a.getter) {
+        float v = 1.0f;
+        patchlib_method_invoke_args(a.getter, nullptr, &v, nullptr);
+        return v > 0.0f ? v : 1.0f;
+    }
+    return 1.0f;
+}
+
 patch_handle_t g_sb{nullptr}; // 当前帧的 spriteBatch
 
 /// 读取布尔环境变量（"0"/空 视为 false）
@@ -237,6 +255,7 @@ void resolve_gfx() {
         g_gfx.a_screen_w = resolve_accessor(g_gfx.t_main, "screenWidth");
         g_gfx.a_screen_h = resolve_accessor(g_gfx.t_main, "screenHeight");
         g_gfx.a_ui_scale_matrix = resolve_accessor(g_gfx.t_main, "UIScaleMatrix");
+        g_gfx.a_ui_scale = resolve_accessor(g_gfx.t_main, "UIScale");
         g_gfx.a_mouse_x = resolve_accessor(g_gfx.t_main, "mouseX");
         g_gfx.a_mouse_y = resolve_accessor(g_gfx.t_main, "mouseY");
         g_gfx.a_mouse_left = resolve_accessor(g_gfx.t_main, "mouseLeft");

@@ -130,7 +130,7 @@ void cursor_list_postfix(patch_handle_t, void **, void *, const patch_method_sig
 
 /// 当前指针是否落在任一已打开窗口内（用上一帧缓存的位置）
 bool pointer_over_windows() {
-    if (g_windows.empty() && !g_edit.active)
+    if (g_windows.empty() && g_named_windows.empty() && !g_edit.active)
         return false;
 #if defined(__ANDROID__)
     if (!g_mouse_down && !g_prev_mouse_down)
@@ -139,8 +139,9 @@ bool pointer_over_windows() {
 #else
     if (!g_gfx.usable || !g_gfx.a_mouse_x.valid() || !g_gfx.a_mouse_left.valid())
         return false;
-    const float mx = static_cast<float>(read_int(g_gfx.a_mouse_x, 0));
-    const float my = static_cast<float>(read_int(g_gfx.a_mouse_y, 0));
+    const float scale = ui_scale_value();
+    const float mx = static_cast<float>(read_int(g_gfx.a_mouse_x, 0)) / scale;
+    const float my = static_cast<float>(read_int(g_gfx.a_mouse_y, 0)) / scale;
     return point_in_gui(mx, my);
 #endif
 }
@@ -745,46 +746,64 @@ void render_guarded() {
     }
 }
 
-/// 在 DrawInterface_35_YouDied 之前绘制 HUD 上方窗口：
-/// 原版接口层此时已经开着 SpriteBatch，我们先 End 掉它，用自己的批次画窗口，
-/// 再重新 Begin(UIScaleMatrix) 把批次还给原版；随后原版继续画 35/36，
-/// 由 36_Cursor 自己用 SamplerStateForCursor + UIScaleMatrix 画唯一一个指针。
-bool interface_gui_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
-    if (!g_installed || g_in_render)
-        return false;
-    if (g_update_hook == PATCH_HOOK_INVALID_ID)
-        ++g_frame_token;
-    g_render_layer = 1;
-    resolve_gfx();
-    if (!g_gfx.usable)
-        return false;
+/// 用原版逻辑重画唯一一个鼠标指针。调用前必须已经处于 SetZoom_UI 上下文，
+/// 这样 mouseX/mouseY 与 UIScaleMatrix 都和原版 HUD 完全一致。
+void redraw_game_cursor() {
+    if (!g_need_cursor_redraw)
+        return;
+    if (!g_m_cursor_layer) {
+        patch_handle_t main_t = patchlib_type_get_type("Terraria", "Main");
+        if (main_t && patchlib_is_valid(main_t)) {
+            g_m_cursor_layer =
+                patchlib_type_get_method_by_param_count(main_t, "DrawInterface_36_Cursor", 0);
+            patchlib_free(main_t);
+        }
+    }
+    if (!g_m_cursor_layer || !patchlib_is_valid(g_m_cursor_layer))
+        return;
 
     patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
     if (!sb || !patchlib_is_valid(sb))
-        return false;
-
-    // 上一层留下的批次先关闭，之后由我们自己的 sb_begin/sb_end 管理。
-    g_sb = sb;
-    sb_end();
-    g_sb = nullptr;
-
-    g_inside_interface_layers = true;
-    render_named_guarded(1);
-    render_guarded();
-    finalize_gui_frame();
-    g_inside_interface_layers = false;
-
-    // 把批次重新开给原版后续接口层（35 YouDied / 36 Cursor）。
+        return;
     g_sb = sb;
     sb_begin();
+    patchlib_method_invoke_args(g_m_cursor_layer, PATCH_NULL, nullptr, nullptr);
+    sb_end();
     g_sb = nullptr;
     patchlib_free(sb);
-    return false;
 }
 
-/// 兜底：接口层钩子不可用时仍走 Main.Draw 后置（此时无法保证指针在最上层）。
+/// 原版在 DrawInterface 结束时 SetZoom_World()，把 mouseX/Y 还原成屏幕像素。
+/// 我们的 GUI 和指针重画需要在 UI 坐标系里，所以临时切回 SetZoom_UI()。
+patch_handle_t g_set_zoom_ui = nullptr;
+patch_handle_t g_set_zoom_unscaled = nullptr;
+
+void begin_ui_zoom() {
+    if (!g_set_zoom_ui) {
+        patch_handle_t pi = patchlib_type_get_type("Terraria.GameInput", "PlayerInput");
+        if (pi && patchlib_is_valid(pi)) {
+            g_set_zoom_ui = patchlib_type_get_method_by_param_count(pi, "SetZoom_UI", 0);
+            g_set_zoom_unscaled = patchlib_type_get_method_by_param_count(pi, "SetZoom_Unscaled", 0);
+            patchlib_free(pi);
+        }
+    }
+    if (g_set_zoom_ui && patchlib_is_valid(g_set_zoom_ui)) {
+        patchlib_method_invoke_args(g_set_zoom_ui, PATCH_NULL, nullptr, nullptr);
+        // 采用 UI 坐标系的鼠标位置/屏幕尺寸；按键状态仍用本帧已采样的值。
+        g_mouse_x = static_cast<float>(read_int(g_gfx.a_mouse_x, 0));
+        g_mouse_y = static_cast<float>(read_int(g_gfx.a_mouse_y, 0));
+        update_screen_size();
+    }
+}
+
+void end_ui_zoom() {
+    if (g_set_zoom_unscaled && patchlib_is_valid(g_set_zoom_unscaled))
+        patchlib_method_invoke_args(g_set_zoom_unscaled, PATCH_NULL, nullptr, nullptr);
+}
+
+/// Main.Draw 后置：每帧渲染入口（HUD 上方 + legacy 窗口）。
 void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
-    if (!g_installed || g_in_render || g_cursor_hook != PATCH_HOOK_INVALID_ID)
+    if (!g_installed || g_in_render)
         return;
     if (g_update_hook == PATCH_HOOK_INVALID_ID)
         ++g_frame_token;
@@ -792,7 +811,11 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
     resolve_gfx();
     if (!g_gfx.usable)
         return;
+
+    begin_ui_zoom();
     render_named_guarded(1);
     render_guarded();
     finalize_gui_frame();
+    redraw_game_cursor();
+    end_ui_zoom();
 }

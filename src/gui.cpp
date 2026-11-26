@@ -136,25 +136,6 @@ void install() {
         patchlib_free(draw_interface);
     }
 
-    // HUD 上方窗口接在原版 35_YouDied / 36_Cursor 之前，
-    // 由原版 36_Cursor 用 UIScaleMatrix 画唯一一个鼠标指针。
-    {
-        patch_handle_t layer35 =
-            patchlib_type_get_method_by_param_count(main_type, "DrawInterface_35_YouDied", 0);
-        if (layer35 && patchlib_is_valid(layer35)) {
-            g_cursor_hook =
-                patchlib_install_prepost_hook(layer35, interface_gui_prefix, nullptr);
-            if (g_cursor_hook == PATCH_HOOK_INVALID_ID)
-                LOG_WARN("[gui] failed to hook DrawInterface_35_YouDied; fallback to Main.Draw");
-            else
-                LOG_INFO("[gui] hud layer attached before cursor (id={})",
-                         static_cast<int>(g_cursor_hook));
-        } else {
-            LOG_WARN("[gui] DrawInterface_35_YouDied not found; fallback to Main.Draw");
-        }
-        patchlib_free(layer35);
-    }
-
     // 输入：在 PlayerInput.UpdateInput 之后采样真实鼠标，再屏蔽游戏侧点击。
     {
         patch_handle_t input_cls = patchlib_type_get_type("Terraria.GameInput", "PlayerInput");
