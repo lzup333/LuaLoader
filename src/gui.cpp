@@ -176,8 +176,27 @@ void install() {
     LOG_INFO("[gui] native GUI enabled (render hook id={})", static_cast<int>(g_draw_hook));
 }
 
-void shutdown() {
-    if (g_draw_hook != PATCH_HOOK_INVALID_ID) {
+void on_mod_unloaded(const std::string &mod_id) {
+    for (auto it = g_named_windows.begin(); it != g_named_windows.end();) {
+        if (it->second.mod_id != mod_id) {
+            ++it;
+            continue;
+        }
+        if (it->second.L) {
+            if (it->second.handle_ref != LUA_NOREF)
+                luaL_unref(it->second.L, LUA_REGISTRYINDEX, it->second.handle_ref);
+            if (it->second.draw_ref != LUA_NOREF)
+                luaL_unref(it->second.L, LUA_REGISTRYINDEX, it->second.draw_ref);
+        }
+        if (g_active_named == &it->second)
+            g_active_named = nullptr;
+        it = g_named_windows.erase(it);
+    }
+    g_windows.erase(mod_id);
+    g_position_applied.erase(mod_id);
+}
+
+void shutdown() {    if (g_draw_hook != PATCH_HOOK_INVALID_ID) {
         patchlib_uninstall_hook(g_draw_hook);
         g_draw_hook = PATCH_HOOK_INVALID_ID;
     }

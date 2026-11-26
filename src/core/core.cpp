@@ -176,6 +176,7 @@ ml_result_t lualoader::core::unload_mod(mod_manifest_t *mod_manifest) {
 
     LOG_DEBUG("Calling mod.cleanup ...");
     lua_engine::call_cleanup(handle);
+    gui::on_mod_unloaded(mod_manifest->mod_id);
     lua_engine::close(handle);
     delete handle;
 

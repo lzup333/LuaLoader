@@ -35,6 +35,9 @@ void install();
 /// 反安装（还原 hook）
 void shutdown();
 
+/// Mod 卸载前清理它注册的具名窗口（在 Lua 状态机关闭前调用）。
+void on_mod_unloaded(const std::string &mod_id);
+
 /// 向 Lua 注入 mod.gui（原生即时模式 API）
 void register_api(lua_State *L, lua_mod_handle_t *handle);
 
