@@ -215,6 +215,10 @@ struct Gfx {
 
 Gfx g_gfx;
 
+// ---- gui trace（临时诊断用）----
+unsigned g_trace_frames = 0; // 已记录帧数；超过上限不再输出
+inline bool gui_trace_on() { return g_trace_frames < 4000; }
+
 /// 读取 Main.UIScale；失败返回 1（不缩放）。
 float ui_scale_value() {
     const Accessor &a = g_gfx.a_ui_scale;
@@ -254,10 +258,8 @@ void resolve_gfx() {
 
         g_gfx.a_screen_w = resolve_accessor(g_gfx.t_main, "screenWidth");
         g_gfx.a_screen_h = resolve_accessor(g_gfx.t_main, "screenHeight");
-#if !defined(__ANDROID__)
         g_gfx.a_ui_scale_matrix = resolve_accessor(g_gfx.t_main, "UIScaleMatrix");
         g_gfx.a_ui_scale = resolve_accessor(g_gfx.t_main, "UIScale");
-#endif
         g_gfx.a_mouse_x = resolve_accessor(g_gfx.t_main, "mouseX");
         g_gfx.a_mouse_y = resolve_accessor(g_gfx.t_main, "mouseY");
         g_gfx.a_mouse_left = resolve_accessor(g_gfx.t_main, "mouseLeft");
@@ -638,22 +640,11 @@ void sb_begin() {
     if (!g_sb)
         return;
     Mat4 ui;
-#if !defined(__ANDROID__)
     if (g_gfx.m_sb_begin8 && ui_scale_matrix(ui)) {
         // 与原版 HUD/鼠标指针同一套 UI 缩放矩阵，避免 UI 缩放下坐标错位。
         NullableMat m{};
         m.has_value = 1;
         m.value = ui;
-#if defined(__ANDROID__)
-        // PE 的 Begin(8) 走 Unity 兼容层，直接按函数指针调用（旧的可用路径）。
-        using FnBegin8 = void (*)(void *self, int sort_mode, void *blend, void *sampler, void *depth, void *raster,
-                                  void *effect, NullableMat *xform, bool deferred);
-        auto fn = reinterpret_cast<FnBegin8>(patchlib_method_get_pointer(g_gfx.m_sb_begin8));
-        if (fn) {
-            fn(g_sb, 0, nullptr, nullptr, nullptr, nullptr, nullptr, &m, true);
-            return;
-        }
-#else
         int sort_mode = 0;
         patch_handle_t null_state = nullptr;
         unsigned char deferred = 1;
@@ -661,9 +652,7 @@ void sb_begin() {
                          &null_state, &null_state, &m,          &deferred};
         patchlib_method_invoke_args(g_gfx.m_sb_begin8, g_sb, nullptr, args);
         return;
-#endif
     }
-#endif
 #if defined(__ANDROID__)
     // PE：强制使用单位矩阵，避免 GUI 跟随世界相机/视野缩放
     // （PE 无 0 参 Begin；2 参 Begin 会带上世界变换）

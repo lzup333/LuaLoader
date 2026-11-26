@@ -136,8 +136,7 @@ void install() {
         patchlib_free(draw_interface);
     }
 
-    // 输入：桌面在 PlayerInput.UpdateInput 之后采样真实鼠标；
-    // PE 上该时机对 CursorManager 不安全，仍用 Main.Update 前缀。
+    // 输入：在 PlayerInput.UpdateInput 之后采样真实鼠标，再屏蔽游戏侧点击。
     {
         patch_handle_t input_cls = patchlib_type_get_type("Terraria.GameInput", "PlayerInput");
         if (!input_cls || !patchlib_is_valid(input_cls)) {
@@ -146,17 +145,11 @@ void install() {
         }
         patch_handle_t update_input =
             input_cls ? patchlib_type_get_method_by_param_count(input_cls, "UpdateInput", 0) : nullptr;
-        bool installed = false;
-#if !defined(__ANDROID__)
         if (update_input && patchlib_is_valid(update_input)) {
             g_update_hook = patchlib_install_prepost_hook(update_input, nullptr, update_input_postfix);
-            installed = g_update_hook != PATCH_HOOK_INVALID_ID;
-            if (installed)
-                LOG_INFO("[gui] hooked PlayerInput.UpdateInput for input sampling (id={})",
-                         static_cast<int>(g_update_hook));
-        }
-#endif
-        if (!installed) {
+            LOG_INFO("[gui] hooked PlayerInput.UpdateInput for input sampling (id={})",
+                     static_cast<int>(g_update_hook));
+        } else {
             patch_handle_t update = patchlib_type_get_method_by_param_count(main_type, "Update", 1);
             if (!update || !patchlib_is_valid(update)) {
                 patchlib_free(update);
@@ -198,9 +191,6 @@ void install() {
     // 预解析绘制接口
     resolve_gfx();
     g_installed = true;
-#if defined(__ANDROID__)
-    LOG_INFO("[gui] PE legacy draw path (identity matrix, no UIScaleMatrix)");
-#endif
     LOG_INFO("[gui] native GUI enabled (render hook id={})", static_cast<int>(g_draw_hook));
 }
 

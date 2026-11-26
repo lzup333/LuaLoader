@@ -640,6 +640,8 @@ void call_named_draw(NamedWindow &nw) {
         return;
     lua_State *L = nw.L;
     const int base = lua_gettop(L);
+    if (gui_trace_on()) LOG_INFO("[gui-trace] draw call begin win={} draw_ref={} handle_ref={}", nw.id,
+                                 nw.draw_ref, nw.handle_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, nw.draw_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, nw.handle_ref);
     if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
@@ -647,6 +649,7 @@ void call_named_draw(NamedWindow &nw) {
         LOG_ERROR("[gui] window '{}' draw failed: {}", nw.id, err ? err : "?");
     }
     lua_settop(L, base);
+    if (gui_trace_on()) LOG_INFO("[gui-trace] draw call end win={}", nw.id);
 }
 
 /// 单个具名窗口：标题栏 / 拖动 / 收起 / 关闭 / 内容回调。
@@ -741,7 +744,10 @@ void draw_named_window(NamedWindow &nw) {
     g_current_mod = nw.key;
     g_cmds.clear();
     g_recording = true;
+    if (gui_trace_on()) LOG_INFO("[gui-trace] window content begin win={} v={} c={}", nw.id,
+                                 ws.visible ? 1 : 0, ws.collapsed ? 1 : 0);
     call_named_draw(nw);
+    if (gui_trace_on()) LOG_INFO("[gui-trace] window content end win={}", nw.id);
     while (!g_scroll_stack.empty())
         end_scroll();
     g_recording = false;

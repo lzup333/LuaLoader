@@ -21,6 +21,7 @@ bool g_need_cursor_redraw = false;
 patch_handle_t g_m_cursor_layer = nullptr;
 bool g_inside_interface_layers = false; // 在 DrawInterface 层内绘制（UI 渲染模式已由原版开启）
 
+
 void ensure_input_frame();
 #if defined(__ANDROID__)
 patch_hook_id_t g_layer_hook = PATCH_HOOK_INVALID_ID;
@@ -149,16 +150,11 @@ bool pointer_over_windows() {
 /// 在 PlayerInput.UpdateInput 之后执行：此时 Main.mouseLeft 已是本帧真实值。
 /// 先采样给 GUI，再屏蔽游戏侧鼠标，避免 GUI 点击被自己屏蔽掉。
 void update_after_input() {
+    if (gui_trace_on()) LOG_INFO("[gui-trace] update_after_input begin");
     ++g_frame_token;
     resolve_gfx();
-    if (!g_gfx.usable)
-        return;
-    // 启动画面阶段不碰任何 GUI/输入状态（PE 上尤其不能提前调用输入相关接口）。
-    if (read_bool(g_gfx.a_show_splash, false))
-        return;
-#if !defined(__ANDROID__)
-    ensure_input_frame();
-#endif
+    if (g_gfx.usable)
+        ensure_input_frame();
 #if defined(__ANDROID__)
     void *cm_instance = g_gfx.f_cm_instance ? read_static_object(g_gfx.f_cm_instance) : nullptr;
     if (cm_instance && g_gfx.m_cm_get_num_cursors && g_gfx.m_cm_get_cursor && g_gfx.m_adjust_real_screen &&
@@ -204,6 +200,7 @@ void update_after_input() {
         write_bool(g_gfx.a_mouse_left, false);
         write_bool(g_gfx.a_mouse_right, false);
     }
+    if (gui_trace_on()) LOG_INFO("[gui-trace] update_after_input end");
 }
 
 /// 主路径：PlayerInput.UpdateInput 后置（PC/PE 都在 Main.Update 前段调用）。
@@ -223,9 +220,13 @@ void ensure_input_frame() {
         return;
     g_input_token = g_frame_token;
     g_need_cursor_redraw = false;
+    if (gui_trace_on()) LOG_INFO("[gui-trace] ensure: screen");
     update_screen_size();
+    if (gui_trace_on()) LOG_INFO("[gui-trace] ensure: input");
     update_input();
+    if (gui_trace_on()) LOG_INFO("[gui-trace] ensure: images");
     images::begin_frame();
+    if (gui_trace_on()) LOG_INFO("[gui-trace] ensure: wheel");
     g_wheel_delta = read_int(g_gfx.a_scroll_wheel, 0);
     g_wheel_used = false;
     g_hover_gui = false;
@@ -340,6 +341,12 @@ void render_named_layer(const int layer) {
     std::sort(list.begin(), list.end(), [](const NamedWindow *a, const NamedWindow *b) {
         return a->order < b->order;
     });
+    if (gui_trace_on()) {
+        LOG_INFO("[gui-trace] named layer {} windows={} input_owner={}", layer, list.size(), g_input_owner);
+        for (NamedWindow *nw : list)
+            LOG_INFO("[gui-trace]  - win={} vis={} col={} layer={} order={}", nw->id,
+                     nw->ws.visible ? 1 : 0, nw->ws.collapsed ? 1 : 0, nw->layer, nw->order);
+    }
 
     g_sb = sb;
     sb_begin();
@@ -757,6 +764,7 @@ void render_guarded() {
 void redraw_game_cursor() {
     if (!g_need_cursor_redraw)
         return;
+    if (gui_trace_on()) LOG_INFO("[gui-trace] redraw cursor begin");
     if (!g_m_cursor_layer) {
         patch_handle_t main_t = patchlib_type_get_type("Terraria", "Main");
         if (main_t && patchlib_is_valid(main_t)) {
@@ -794,6 +802,7 @@ void begin_ui_zoom() {
         }
     }
     if (g_set_zoom_ui && patchlib_is_valid(g_set_zoom_ui)) {
+        if (gui_trace_on()) LOG_INFO("[gui-trace] SetZoom_UI()");
         patchlib_method_invoke_args(g_set_zoom_ui, PATCH_NULL, nullptr, nullptr);
         // 采用 UI 坐标系的鼠标位置/屏幕尺寸；按键状态仍用本帧已采样的值。
         g_mouse_x = static_cast<float>(read_int(g_gfx.a_mouse_x, 0));
@@ -803,6 +812,7 @@ void begin_ui_zoom() {
 }
 
 void end_ui_zoom() {
+    if (gui_trace_on()) LOG_INFO("[gui-trace] SetZoom_Unscaled()");
     if (g_set_zoom_unscaled && patchlib_is_valid(g_set_zoom_unscaled))
         patchlib_method_invoke_args(g_set_zoom_unscaled, PATCH_NULL, nullptr, nullptr);
 }
@@ -817,17 +827,23 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
     resolve_gfx();
     if (!g_gfx.usable)
         return;
-    if (read_bool(g_gfx.a_show_splash, false))
-        return;
 
-#if !defined(__ANDROID__)
+    if (gui_trace_on()) {
+        ++g_trace_frames;
+        LOG_INFO("[gui-trace] frame {} begin zoom={} usable={}", g_trace_frames,
+                 (g_set_zoom_ui && patchlib_is_valid(g_set_zoom_ui)) ? 1 : 0,
+                 g_gfx.usable ? 1 : 0);
+    }
     begin_ui_zoom();
-#endif
+    if (gui_trace_on()) LOG_INFO("[gui-trace] zoom in done");
     render_named_guarded(1);
+    if (gui_trace_on()) LOG_INFO("[gui-trace] named layer done");
     render_guarded();
+    if (gui_trace_on()) LOG_INFO("[gui-trace] legacy render done");
     finalize_gui_frame();
-#if !defined(__ANDROID__)
+    if (gui_trace_on()) LOG_INFO("[gui-trace] finalize done");
     redraw_game_cursor();
+    if (gui_trace_on()) LOG_INFO("[gui-trace] cursor done");
     end_ui_zoom();
-#endif
+    if (gui_trace_on()) LOG_INFO("[gui-trace] zoom out done");
 }
