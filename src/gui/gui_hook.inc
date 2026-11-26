@@ -144,10 +144,10 @@ bool pointer_over_windows() {
 #endif
 }
 
-/// Main.Update 前缀：指针悬停在 GUI 上时屏蔽游戏鼠标，避免误触游戏操作
-bool update_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
+/// 在 PlayerInput.UpdateInput 之后执行：此时 Main.mouseLeft 已是本帧真实值。
+/// 先采样给 GUI，再屏蔽游戏侧鼠标，避免 GUI 点击被自己屏蔽掉。
+void update_after_input() {
     ++g_frame_token;
-    // 先采样原始输入，再屏蔽游戏鼠标；否则 GUI 自己读到的也是被屏蔽后的值。
     resolve_gfx();
     if (g_gfx.usable)
         ensure_input_frame();
@@ -196,7 +196,17 @@ bool update_prefix(patch_handle_t, void **, const patch_method_signature_t *, vo
         write_bool(g_gfx.a_mouse_left, false);
         write_bool(g_gfx.a_mouse_right, false);
     }
-    return false; // 不跳过原函数
+}
+
+/// 主路径：PlayerInput.UpdateInput 后置（PC/PE 都在 Main.Update 前段调用）。
+void update_input_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
+    update_after_input();
+}
+
+/// 兜底：找不到 PlayerInput.UpdateInput 时仍挂在 Main.Update 前缀。
+bool update_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
+    update_after_input();
+    return false;
 }
 
 /// 每个 Main.Update 只采样一次输入/切换一次图片帧；HUD 上下两层共用。

@@ -136,19 +136,37 @@ void install() {
         patchlib_free(draw_interface);
     }
 
-    // 输入屏蔽：在 Main.Update 之前判断是否悬停 GUI
-    patch_handle_t update = patchlib_type_get_method_by_param_count(main_type, "Update", 1);
-    if (!update || !patchlib_is_valid(update)) {
-        patchlib_free(update);
-        update = patchlib_type_get_method_by_param_count(main_type, "DoUpdate", 1);
+    // 输入：在 PlayerInput.UpdateInput 之后采样真实鼠标，再屏蔽游戏侧点击。
+    {
+        patch_handle_t input_cls = patchlib_type_get_type("Terraria.GameInput", "PlayerInput");
+        if (!input_cls || !patchlib_is_valid(input_cls)) {
+            patchlib_free(input_cls);
+            input_cls = patchlib_type_get_type("Terraria", "PlayerInput");
+        }
+        patch_handle_t update_input =
+            input_cls ? patchlib_type_get_method_by_param_count(input_cls, "UpdateInput", 0) : nullptr;
+        if (update_input && patchlib_is_valid(update_input)) {
+            g_update_hook = patchlib_install_prepost_hook(update_input, nullptr, update_input_postfix);
+            LOG_INFO("[gui] hooked PlayerInput.UpdateInput for input sampling (id={})",
+                     static_cast<int>(g_update_hook));
+        } else {
+            patch_handle_t update = patchlib_type_get_method_by_param_count(main_type, "Update", 1);
+            if (!update || !patchlib_is_valid(update)) {
+                patchlib_free(update);
+                update = patchlib_type_get_method_by_param_count(main_type, "DoUpdate", 1);
+            }
+            if (update && patchlib_is_valid(update)) {
+                g_update_hook = patchlib_install_prepost_hook(update, update_prefix, nullptr);
+                LOG_INFO("[gui] hooked Main.Update for input suppression (id={})",
+                         static_cast<int>(g_update_hook));
+            } else {
+                LOG_WARN("[gui] input hook not found; GUI will not suppress game mouse input");
+            }
+            patchlib_free(update);
+        }
+        patchlib_free(update_input);
+        patchlib_free(input_cls);
     }
-    if (update && patchlib_is_valid(update)) {
-        g_update_hook = patchlib_install_prepost_hook(update, update_prefix, nullptr);
-        LOG_INFO("[gui] hooked Main.Update for input suppression (id={})", static_cast<int>(g_update_hook));
-    } else {
-        LOG_WARN("[gui] Main.Update not found; GUI will not suppress game mouse input");
-    }
-    patchlib_free(update);
     patchlib_free(main_type);
 
     // Block mobile controller input at dispatch, before button callbacks run.
