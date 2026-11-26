@@ -19,6 +19,7 @@ unsigned g_frame_token = 0;      // Main.Update 每帧自增
 unsigned g_input_token = ~0u;    // 最近一次采样输入所属帧
 bool g_need_cursor_redraw = false;
 patch_handle_t g_m_cursor_layer = nullptr;
+bool g_inside_interface_layers = false; // 在 DrawInterface 层内绘制（UI 渲染模式已由原版开启）
 
 void ensure_input_frame();
 #if defined(__ANDROID__)
@@ -269,14 +270,14 @@ void render_named_layer(const int layer) {
 #if defined(__ANDROID__)
     struct NamedUIRenderScope {
         ~NamedUIRenderScope() {
-            if (g_gfx.m_setup_rendering_ui) {
+            if (!g_inside_interface_layers && g_gfx.m_setup_rendering_ui) {
                 unsigned char v = 0;
                 void *args[1] = {&v};
                 patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
             }
         }
     } named_ui_scope;
-    if (g_gfx.m_setup_rendering_ui) {
+    if (!g_inside_interface_layers && g_gfx.m_setup_rendering_ui) {
         unsigned char v = 1;
         void *args[1] = {&v};
         patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
@@ -451,7 +452,7 @@ void render() {
 #if defined(__ANDROID__)
     struct UIRenderScope {
         ~UIRenderScope() {
-            if (g_gfx.m_setup_rendering_ui) {
+            if (!g_inside_interface_layers && g_gfx.m_setup_rendering_ui) {
                 unsigned char v = 0;
                 void *args[1] = {&v};
                 patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
@@ -459,7 +460,7 @@ void render() {
         }
     } ui_scope;
 
-    if (g_gfx.m_setup_rendering_ui) {
+    if (!g_inside_interface_layers && g_gfx.m_setup_rendering_ui) {
         unsigned char v = 1;
         void *args[1] = {&v};
         patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
@@ -744,40 +745,46 @@ void render_guarded() {
     }
 }
 
-/// 在窗口画完后让原版再画一次鼠标指针，且严格走原版 UIScaleMatrix 批次。
-/// 直接调用 DrawInterface_36_Cursor 本体（End + Begin(UIScaleMatrix) + 画指针），
-/// 不会额外出现第二个指针，样式与缩放也与原版一致。
-void redraw_game_cursor() {
-    if (!g_need_cursor_redraw)
-        return;
-    if (!g_m_cursor_layer) {
-        patch_handle_t main_t = patchlib_type_get_type("Terraria", "Main");
-        if (main_t && patchlib_is_valid(main_t)) {
-            g_m_cursor_layer =
-                patchlib_type_get_method_by_param_count(main_t, "DrawInterface_36_Cursor", 0);
-            patchlib_free(main_t);
-        }
-    }
-    if (!g_m_cursor_layer || !patchlib_is_valid(g_m_cursor_layer))
-        return;
+/// 在 DrawInterface_35_YouDied 之前绘制 HUD 上方窗口：
+/// 原版接口层此时已经开着 SpriteBatch，我们先 End 掉它，用自己的批次画窗口，
+/// 再重新 Begin(UIScaleMatrix) 把批次还给原版；随后原版继续画 35/36，
+/// 由 36_Cursor 自己用 SamplerStateForCursor + UIScaleMatrix 画唯一一个指针。
+bool interface_gui_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
+    if (!g_installed || g_in_render)
+        return false;
+    if (g_update_hook == PATCH_HOOK_INVALID_ID)
+        ++g_frame_token;
+    g_render_layer = 1;
+    resolve_gfx();
+    if (!g_gfx.usable)
+        return false;
 
     patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
     if (!sb || !patchlib_is_valid(sb))
-        return;
+        return false;
+
+    // 上一层留下的批次先关闭，之后由我们自己的 sb_begin/sb_end 管理。
     g_sb = sb;
-    // 原版方法开头就是 End()，所以先开一个批次给它 End；
-    // 之后它会用 UIScaleMatrix 重开并画指针。
-    sb_begin();
-    patchlib_method_invoke_args(g_m_cursor_layer, PATCH_NULL, nullptr, nullptr);
-    // 收掉它留下的批次，避免下一帧 Begin 时状态未闭合。
     sb_end();
     g_sb = nullptr;
+
+    g_inside_interface_layers = true;
+    render_named_guarded(1);
+    render_guarded();
+    finalize_gui_frame();
+    g_inside_interface_layers = false;
+
+    // 把批次重新开给原版后续接口层（35 YouDied / 36 Cursor）。
+    g_sb = sb;
+    sb_begin();
+    g_sb = nullptr;
     patchlib_free(sb);
+    return false;
 }
 
-/// Main.Draw 后置：每帧渲染入口（HUD 上方 + legacy 窗口）。
+/// 兜底：接口层钩子不可用时仍走 Main.Draw 后置（此时无法保证指针在最上层）。
 void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
-    if (!g_installed || g_in_render)
+    if (!g_installed || g_in_render || g_cursor_hook != PATCH_HOOK_INVALID_ID)
         return;
     if (g_update_hook == PATCH_HOOK_INVALID_ID)
         ++g_frame_token;
@@ -788,5 +795,4 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
     render_named_guarded(1);
     render_guarded();
     finalize_gui_frame();
-    redraw_game_cursor();
 }
