@@ -633,7 +633,7 @@ static int l_tile_register(lua_State *L) {
     e->tile.tile_ops.get_drop = (e->on_drop_ref != LUA_NOREF) ? lua_tile_get_drop : nullptr;
     e->tile.tile_ops.get_light = nullptr;
 
-    if (!terraria_tile_manager_register_tile_ext(&e->tile, sizeof(e->tile))) {
+    if (!terraria_tile_manager_register_tile(&e->tile)) {
         LOG_ERROR("[mod.tile] {}: 注册失败", tile_name);
         if (e->on_drop_ref != LUA_NOREF)
             luaL_unref(L, LUA_REGISTRYINDEX, e->on_drop_ref);
