@@ -744,6 +744,12 @@ bool g_active_cursor_valid = false;
 void update_screen_size() {
     const int w = read_int(g_gfx.a_screen_w, 0);
     const int h = read_int(g_gfx.a_screen_h, 0);
+    static int last_w = -1, last_h = -1;
+    if (w != last_w || h != last_h) {
+        last_w = w;
+        last_h = h;
+        LOG_INFO("[gui] UI screen {}x{}", w, h);
+    }
     if (w > 0)
         g_screen_w = w;
     if (h > 0)

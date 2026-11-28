@@ -77,6 +77,12 @@ namespace {
 } // namespace
 
 void configure_storage(const std::string &root) {
+    /* ModLoader 传入的 private_dir 不保证已经存在（实测 PE 上不会自动创建），
+     * 布局文件直接写会失败并每 5 秒重试一次。这里先创建目录。 */
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    if (ec)
+        LOG_WARN("[gui-folder] create private dir failed: {} ({})", root, ec.message());
     load_layout(root);
 }
 

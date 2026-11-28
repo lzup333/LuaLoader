@@ -222,7 +222,11 @@ void ensure_input_frame() {
         return;
     g_input_token = g_frame_token;
     g_need_cursor_redraw = false;
-    update_screen_size();
+    /* 注意：这里不能用 update_screen_size()。
+     * Update 阶段 Main.screenWidth/Height 是「世界视野尺寸」，会随视野缩放
+     * 从 1884x870 变到 554x256；GUI 的坐标/裁剪必须用 UI 尺寸。
+     * UI 尺寸在 SetupRenderingUI(true) 之后才写入 Main.screenWidth/Height，
+     * 所以改到 render()/render_named_layer() 进入 UI 模式后再采样。 */
     update_input();
     images::begin_frame();
     g_wheel_delta = read_int(g_gfx.a_scroll_wheel, 0);
@@ -288,6 +292,7 @@ void render_named_layer(const int layer) {
         void *args[1] = {&v};
         patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
     }
+    update_screen_size();
 #endif
 
     ensure_input_frame();
@@ -617,6 +622,8 @@ void render() {
         void *args[1] = {&v};
         patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
     }
+    /* 进入 UI 模式后 Main.screenWidth/Height 才是 UI 尺寸。 */
+    update_screen_size();
 #endif
 
     std::vector<std::string> owners;
@@ -968,6 +975,22 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
     if (read_bool(g_gfx.a_show_splash, false))
         return;
 #if defined(__ANDROID__)
+    /* 整帧只切换一次 SetupRenderingUI(true/false)。
+     * 之前 hud_above 的具名窗口和 legacy 窗口各自进入/退出一次 UI 渲染模式，
+     * 中间的 SetupRenderingUI(false) 会 FlushBatches 并恢复世界渲染状态，
+     * 导致后画的窗口吃到世界相机/视野缩放矩阵（缩放 >1.5 时向左上漂）。
+     * 这里用一个外层 scope 包住整帧，内层 render 检测到
+     * g_inside_interface_layers 后不再重复切换。 */
+    const bool old_inside_interface_layers = g_inside_interface_layers;
+    bool frame_scope_entered = false;
+    if (!old_inside_interface_layers && g_gfx.m_setup_rendering_ui) {
+        unsigned char v = 1;
+        void *args[1] = {&v};
+        patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
+        g_inside_interface_layers = true;
+        frame_scope_entered = true;
+    }
+
     // PE：hud_below 由 DrawInterface 前缀绘制（HUD 下方）；这里只画 HUD 上方那层。
     // DrawInterface 没装成功（或菜单等场景没调用）时回退到“两层同批一次画”。
     if (g_below_hook != PATCH_HOOK_INVALID_ID) {
@@ -986,7 +1009,14 @@ void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature
 #endif
     render_guarded();
     finalize_gui_frame();
-#if !defined(__ANDROID__)
+#if defined(__ANDROID__)
+    g_inside_interface_layers = old_inside_interface_layers;
+    if (frame_scope_entered && g_gfx.m_setup_rendering_ui) {
+        unsigned char v = 0;
+        void *args[1] = {&v};
+        patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
+    }
+#else
     redraw_game_cursor();
     end_ui_zoom();
 #endif

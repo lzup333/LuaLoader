@@ -149,11 +149,18 @@ void save_layout() {
         for (const auto &kv : g_saved_positions)
             j["positions"][kv.first] = {kv.second.first, kv.second.second};
         const auto tmp = g_layout_path + ".tmp";
+        std::error_code dir_ec;
+        const auto parent = std::filesystem::path(g_layout_path).parent_path();
+        if (!parent.empty())
+            std::filesystem::create_directories(parent, dir_ec);
         std::ofstream out(tmp, std::ios::trunc);
+        if (!out)
+            throw std::runtime_error("cannot open " + tmp +
+                                     (dir_ec ? (": " + dir_ec.message()) : std::string()));
         out << j.dump(2);
         out.close();
         if (!out)
-            throw std::runtime_error("layout write failed");
+            throw std::runtime_error("layout write failed: " + tmp);
         std::error_code ec;
         std::filesystem::rename(tmp, g_layout_path, ec);
         if (ec) {
